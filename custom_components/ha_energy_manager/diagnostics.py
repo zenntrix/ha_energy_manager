@@ -33,4 +33,5 @@ async def async_get_config_entry_diagnostics(
             "is_enabled": data.is_enabled if data else None,
         },
         "decision_log": coordinator.log_entries,
+        "control_trace": coordinator.control_trace,
     }

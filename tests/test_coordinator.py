@@ -8,11 +8,16 @@ from unittest.mock import AsyncMock, MagicMock, patch
 import pytest
 
 from custom_components.ha_energy_manager.const import (
+    CONF_BATTERY_SOC_SENSOR,
+    CONF_BATTERIES,
     CONF_CHARGE_SWITCH,
     CONF_CUSTOM_LOAD_POWER_NUMBER,
     CONF_DISCHARGE_SWITCH,
     CONF_MAX_CHARGE_POWER_NUMBER,
     CONF_POWER_SUPPLY_MODE_SELECT,
+    OPT_DEVICE_SETTINGS,
+    OPT_DEADBAND,
+    OPT_MAX_GRID_IMPORT_SOLAR_CHARGE,
     DEFAULT_EV_START_DELAY_CYCLES,
     DEFAULT_EV_STOP_DELAY_CYCLES,
     DEFAULT_EV_VOLTAGE,
@@ -22,6 +27,7 @@ from custom_components.ha_energy_manager.const import (
     MODE_FORCED_CHARGE,
     MODE_HOLD,
     MODE_SOLAR,
+    CONF_POWERSTREAM_PAIRED,
     OPT_EV_CHARGER_PHASES,
     PS_MODE_PRIORITIZE_STORAGE,
     PS_MODE_PRIORITIZE_SUPPLY,
@@ -81,6 +87,18 @@ class TestBatterySOCProtection:
         mock_hass._sensor_states["sensor.battery_soc"] = make_state("unavailable")
         assert coordinator._read_battery_soc() == 0.0
 
+    def test_multi_battery_soc_uses_highest_available(self, coordinator, mock_hass):
+        """The shared FSM can discharge when at least one battery is usable."""
+        coordinator._batteries = [
+            {CONF_BATTERY_SOC_SENSOR: "sensor.battery_a"},
+            {CONF_BATTERY_SOC_SENSOR: "sensor.battery_b"},
+        ]
+        mock_hass._sensor_states.update(
+            {"sensor.battery_a": make_state(15), "sensor.battery_b": make_state(70)}
+        )
+
+        assert coordinator._read_battery_soc() == 70
+
     def test_valid_reading_updates_last_known(self, coordinator, mock_hass):
         """A valid SOC reading updates the cached value."""
         mock_hass._sensor_states["sensor.battery_soc"] = make_state(72)
@@ -112,6 +130,68 @@ class TestBatterySOCProtection:
         assert coordinator._fsm_state == STATE_DISCHARGE
         assert data.battery_soc == 50.0
 
+    @pytest.mark.asyncio
+    async def test_control_trace_records_grid_filter_and_device_charge_targets(
+        self, coordinator, mock_hass, mock_config_entry
+    ):
+        coordinator._is_enabled = False
+        coordinator._batteries = [
+            {
+                CONF_BATTERY_SOC_SENSOR: "sensor.battery_a",
+                CONF_MAX_CHARGE_POWER_NUMBER: "number.charge_a",
+            },
+            {
+                CONF_BATTERY_SOC_SENSOR: "sensor.battery_b",
+                CONF_MAX_CHARGE_POWER_NUMBER: "number.charge_b",
+            },
+        ]
+        coordinator._last_device_charge = {
+            "sensor.battery_a": 250,
+            "sensor.battery_b": 0,
+        }
+        mock_config_entry.options[OPT_DEVICE_SETTINGS] = {
+            "sensor.battery_a": {"min_charge": 200},
+            "sensor.battery_b": {"min_charge": 200},
+        }
+        coordinator._config_entry = mock_config_entry
+        mock_hass._sensor_states.update(
+            {
+                "sensor.battery_a": make_state(45),
+                "sensor.battery_b": make_state(61),
+                "number.charge_a": make_state(250),
+                "number.charge_b": make_state(0),
+            }
+        )
+
+        await coordinator._async_update_data()
+
+        trace = coordinator.control_trace[-1]
+        assert trace["grid_raw_w"] == 100
+        assert trace["grid_control_w"] == 100
+        assert trace["batteries"]["sensor.battery_a"] == {
+            "soc": 45.0,
+            "charge_target": 250,
+            "charge_control_state": "250",
+        }
+        assert trace["batteries"]["sensor.battery_b"]["charge_target"] == 0
+
+    @pytest.mark.asyncio
+    async def test_discharge_control_uses_live_grid_sample(
+        self, coordinator, mock_hass
+    ):
+        """Feed-in control should not react to a stale median after a grid change."""
+        coordinator._active_mode = MODE_AUTOMATIC
+        coordinator._fsm_state = STATE_DISCHARGE
+        coordinator._grid_power_history.extend([-500, -500])
+        mock_hass._sensor_states["sensor.grid_power"] = make_state(400)
+        run_automatic = AsyncMock()
+        coordinator._run_automatic = run_automatic
+
+        await coordinator._async_update_data()
+
+        assert run_automatic.await_args.args[0] == 400
+        assert coordinator.control_trace[-1]["grid_filtered_w"] == -500
+
 
 # ── Snap to step ─────────────────────────────────────────────────────
 
@@ -131,6 +211,12 @@ class TestSnapToStep:
         assert coordinator._snap_to_step(24, step=50) == 0
         assert coordinator._snap_to_step(75, step=50) == 100
         assert coordinator._snap_to_step(276, step=50) == 300
+
+    def test_grid_control_filter_rejects_an_isolated_spike(self, coordinator):
+        assert coordinator._filter_grid_power(100) == 100
+        assert coordinator._filter_grid_power(1200) == 1200
+        assert coordinator._filter_grid_power(100) == 100
+        assert coordinator._filter_grid_power(100) == 100
 
 
 # ── Proportional adjustment ─────────────────────────────────────────
@@ -264,6 +350,77 @@ class TestSetChargePower:
             for call in mock_hass.services.async_call.call_args_list
         )
 
+    @pytest.mark.asyncio
+    async def test_multi_battery_charge_splits_and_applies_device_caps(
+        self, coordinator, mock_hass, mock_config_entry
+    ):
+        """Charge target is split, then capped by each battery's own maximum."""
+        coordinator._batteries = [
+            {
+                CONF_BATTERY_SOC_SENSOR: "sensor.battery_a",
+                CONF_MAX_CHARGE_POWER_NUMBER: "number.charge_a",
+                CONF_POWER_SUPPLY_MODE_SELECT: "select.mode_a",
+            },
+            {
+                CONF_BATTERY_SOC_SENSOR: "sensor.battery_b",
+                CONF_MAX_CHARGE_POWER_NUMBER: "number.charge_b",
+                CONF_POWER_SUPPLY_MODE_SELECT: "select.mode_b",
+            },
+        ]
+        mock_config_entry.options[OPT_DEVICE_SETTINGS] = {
+            "sensor.battery_a": {"max_charge": 400, "min_charge": 100},
+            "sensor.battery_b": {"max_charge": 800, "min_charge": 100},
+        }
+        coordinator._config_entry = mock_config_entry
+
+        await coordinator._async_set_charge_power(1000)
+
+        calls = [
+            call.args[2]
+            for call in mock_hass.services.async_call.call_args_list
+            if call.args[0:2] == ("number", "set_value")
+        ]
+        assert calls == [
+            {"entity_id": "number.charge_a", "value": 400},
+            {"entity_id": "number.charge_b", "value": 600},
+        ]
+        assert coordinator._current_charge_power == 1000
+
+    @pytest.mark.asyncio
+    async def test_multi_battery_charge_skips_full_battery_and_uses_remaining_capacity(
+        self, coordinator, mock_hass, mock_config_entry
+    ):
+        """A full battery receives no charge and its available share goes to others."""
+        coordinator._batteries = [
+            {
+                CONF_BATTERY_SOC_SENSOR: "sensor.full",
+                CONF_MAX_CHARGE_POWER_NUMBER: "number.charge_full",
+            },
+            {
+                CONF_BATTERY_SOC_SENSOR: "sensor.available",
+                CONF_MAX_CHARGE_POWER_NUMBER: "number.charge_available",
+            },
+        ]
+        mock_config_entry.options[OPT_DEVICE_SETTINGS] = {
+            "sensor.full": {"max_charge": 1200, "min_charge": 200},
+            "sensor.available": {"max_charge": 800, "min_charge": 200},
+        }
+        coordinator._config_entry = mock_config_entry
+        mock_hass._sensor_states["sensor.full"] = make_state(100)
+        mock_hass._sensor_states["sensor.available"] = make_state(40)
+
+        await coordinator._async_set_charge_power(500)
+
+        calls = [
+            call.args[2]
+            for call in mock_hass.services.async_call.call_args_list
+            if call.args[0:2] == ("number", "set_value")
+        ]
+        assert calls == [
+            {"entity_id": "number.charge_full", "value": 0},
+            {"entity_id": "number.charge_available", "value": 500},
+        ]
+
 
 # ── Feed-in power setter ────────────────────────────────────────────
 
@@ -315,6 +472,213 @@ class TestSetFeedInPower:
         # Default max is 800
         mock_hass.services.async_call.assert_any_call(
             "number", "set_value", {"entity_id": "number.custom_load", "value": 800}
+        )
+
+    @pytest.mark.asyncio
+    async def test_multi_battery_soc_floor_and_feed_in_cap(
+        self, coordinator, mock_hass, mock_config_entry
+    ):
+        """Low-SOC batteries are set to zero while eligible batteries obey their cap."""
+        coordinator._batteries = [
+            {
+                CONF_BATTERY_SOC_SENSOR: "sensor.battery_a",
+                CONF_CUSTOM_LOAD_POWER_NUMBER: "number.load_a",
+                CONF_POWER_SUPPLY_MODE_SELECT: "select.mode_a",
+                CONF_POWERSTREAM_PAIRED: True,
+            },
+            {
+                CONF_BATTERY_SOC_SENSOR: "sensor.battery_b",
+                CONF_CUSTOM_LOAD_POWER_NUMBER: "number.load_b",
+                CONF_POWER_SUPPLY_MODE_SELECT: "select.mode_b",
+                CONF_POWERSTREAM_PAIRED: True,
+            },
+        ]
+        mock_config_entry.options[OPT_DEVICE_SETTINGS] = {
+            "sensor.battery_a": {"min_soc": 20, "max_feed_in": 600},
+            "sensor.battery_b": {"min_soc": 10, "max_feed_in": 400},
+        }
+        coordinator._config_entry = mock_config_entry
+        mock_hass._sensor_states.update(
+            {
+                "sensor.battery_a": make_state(15),
+                "sensor.battery_b": make_state(80),
+                "number.load_a": make_state(100),
+            }
+        )
+
+        await coordinator._async_set_feed_in_power(700)
+
+        mock_hass.services.async_call.assert_any_call(
+            "number", "set_value", {"entity_id": "number.load_a", "value": 0}
+        )
+        mock_hass.services.async_call.assert_any_call(
+            "number", "set_value", {"entity_id": "number.load_b", "value": 400}
+        )
+        assert coordinator._current_feed_in_power == 400
+
+    @pytest.mark.parametrize(
+        ("target", "expected"),
+        [
+            (600, {"number.load_a": 200, "number.load_b": 400}),
+            (1000, {"number.load_a": 300, "number.load_b": 700}),
+        ],
+    )
+    @pytest.mark.asyncio
+    async def test_multi_powerstream_feed_in_balances_usable_energy(
+        self, coordinator, mock_hass, mock_config_entry, target, expected
+    ):
+        """Split feed-in according to capacity-weighted SOC above reserve."""
+        coordinator._batteries = [
+            {
+                CONF_BATTERY_SOC_SENSOR: "sensor.battery_low",
+                CONF_CUSTOM_LOAD_POWER_NUMBER: "number.load_a",
+                CONF_POWER_SUPPLY_MODE_SELECT: "select.mode_a",
+                CONF_POWERSTREAM_PAIRED: True,
+            },
+            {
+                CONF_BATTERY_SOC_SENSOR: "sensor.battery_high",
+                CONF_CUSTOM_LOAD_POWER_NUMBER: "number.load_b",
+                CONF_POWER_SUPPLY_MODE_SELECT: "select.mode_b",
+                CONF_POWERSTREAM_PAIRED: True,
+            },
+        ]
+        mock_config_entry.options[OPT_DEVICE_SETTINGS] = {
+            "sensor.battery_low": {"min_soc": 10, "max_feed_in": 800},
+            "sensor.battery_high": {"min_soc": 10, "max_feed_in": 800},
+        }
+        coordinator._config_entry = mock_config_entry
+        mock_hass._sensor_states.update(
+            {
+                "sensor.battery_low": make_state(47),
+                "sensor.battery_high": make_state(89),
+            }
+        )
+
+        await coordinator._async_set_feed_in_power(target)
+
+        calls = {
+            call.args[2]["entity_id"]: call.args[2]["value"]
+            for call in mock_hass.services.async_call.call_args_list
+            if call.args[0:2] == ("number", "set_value")
+        }
+        assert calls == expected
+        assert coordinator._current_feed_in_power == target
+
+    @pytest.mark.asyncio
+    async def test_multi_powerstream_feed_in_accounts_for_different_capacities(
+        self, coordinator, mock_hass, mock_config_entry
+    ):
+        """A larger battery with more usable Wh carries more of the discharge."""
+        coordinator._batteries = [
+            {
+                CONF_BATTERY_SOC_SENSOR: "sensor.battery_small",
+                CONF_CUSTOM_LOAD_POWER_NUMBER: "number.load_small",
+                CONF_POWERSTREAM_PAIRED: True,
+            },
+            {
+                CONF_BATTERY_SOC_SENSOR: "sensor.battery_large",
+                CONF_CUSTOM_LOAD_POWER_NUMBER: "number.load_large",
+                CONF_POWERSTREAM_PAIRED: True,
+            },
+        ]
+        mock_config_entry.options[OPT_DEVICE_SETTINGS] = {
+            "sensor.battery_small": {"min_soc": 10, "max_feed_in": 800, "capacity_wh": 1000},
+            "sensor.battery_large": {"min_soc": 10, "max_feed_in": 800, "capacity_wh": 5000},
+        }
+        coordinator._config_entry = mock_config_entry
+        mock_hass._sensor_states.update(
+            {"sensor.battery_small": make_state(80), "sensor.battery_large": make_state(80)}
+        )
+
+        await coordinator._async_set_feed_in_power(600)
+
+        calls = {
+            call.args[2]["entity_id"]: call.args[2]["value"]
+            for call in mock_hass.services.async_call.call_args_list
+            if call.args[0:2] == ("number", "set_value")
+        }
+        assert calls == {"number.load_small": 100, "number.load_large": 500}
+
+    @pytest.mark.asyncio
+    async def test_shared_feed_control_is_written_once_and_respects_group_soc_floor(
+        self, coordinator, mock_hass, mock_config_entry
+    ):
+        """A shared PowerStream is controlled once and stopped if any linked battery is low."""
+        coordinator._batteries = [
+            {
+                CONF_BATTERY_SOC_SENSOR: "sensor.battery_a",
+                CONF_CUSTOM_LOAD_POWER_NUMBER: "number.shared_load",
+                CONF_POWER_SUPPLY_MODE_SELECT: "select.shared_mode",
+                CONF_POWERSTREAM_PAIRED: True,
+            },
+            {
+                CONF_BATTERY_SOC_SENSOR: "sensor.battery_b",
+                CONF_CUSTOM_LOAD_POWER_NUMBER: "number.shared_load",
+                CONF_POWER_SUPPLY_MODE_SELECT: "select.shared_mode",
+                CONF_POWERSTREAM_PAIRED: True,
+            },
+        ]
+        mock_config_entry.options[OPT_DEVICE_SETTINGS] = {
+            "sensor.battery_a": {"min_soc": 20, "max_feed_in": 300},
+            "sensor.battery_b": {"min_soc": 10, "max_feed_in": 400},
+        }
+        coordinator._config_entry = mock_config_entry
+        mock_hass._sensor_states.update(
+            {
+                "sensor.battery_a": make_state(80),
+                "sensor.battery_b": make_state(80),
+            }
+        )
+
+        await coordinator._async_set_feed_in_power(700)
+        mock_hass.services.async_call.assert_any_call(
+            "number", "set_value", {"entity_id": "number.shared_load", "value": 700}
+        )
+        assert sum(
+            call.args[2].get("entity_id") == "number.shared_load"
+            for call in mock_hass.services.async_call.call_args_list
+            if call.args[0:2] == ("number", "set_value")
+        ) == 1
+
+        mock_hass.services.async_call.reset_mock()
+        mock_hass._sensor_states["sensor.battery_a"] = make_state(15)
+        mock_hass._sensor_states["number.shared_load"] = make_state(700)
+        await coordinator._async_set_feed_in_power(700)
+
+        mock_hass.services.async_call.assert_any_call(
+            "number", "set_value", {"entity_id": "number.shared_load", "value": 0}
+        )
+        mock_hass.services.async_call.assert_any_call(
+            "switch", "turn_off", {"entity_id": "switch.discharge"}
+        )
+
+    @pytest.mark.asyncio
+    async def test_multi_battery_feed_in_requires_explicit_pairing(
+        self, coordinator, mock_hass
+    ):
+        """Legacy guessed associations cannot drive a multi-battery feed control."""
+        coordinator._batteries = [
+            {
+                CONF_BATTERY_SOC_SENSOR: "sensor.battery_a",
+                CONF_CUSTOM_LOAD_POWER_NUMBER: "number.shared_load",
+                CONF_POWER_SUPPLY_MODE_SELECT: "select.shared_mode",
+            },
+            {
+                CONF_BATTERY_SOC_SENSOR: "sensor.battery_b",
+                CONF_CUSTOM_LOAD_POWER_NUMBER: "number.shared_load",
+                CONF_POWER_SUPPLY_MODE_SELECT: "select.shared_mode",
+            },
+        ]
+
+        await coordinator._async_set_feed_in_power(500)
+
+        mock_hass.services.async_call.assert_any_call(
+            "switch", "turn_off", {"entity_id": "switch.discharge"}
+        )
+        assert not any(
+            call.args[0:2] == ("number", "set_value")
+            and call.args[2].get("value", 0) > 0
+            for call in mock_hass.services.async_call.call_args_list
         )
 
 
@@ -507,7 +871,7 @@ class TestAutomaticMode:
 
         # grid export (negative = exporting) means surplus
         await coordinator._run_automatic(
-            grid_power=-100, solar_power=800, battery_soc=50
+            grid_power=-200, solar_power=800, battery_soc=50
         )
         assert coordinator._fsm_state == STATE_CHARGE
 
@@ -670,8 +1034,8 @@ class TestDynamicFeedIn:
     """Test dynamic feed-in power calculation in discharge state.
 
     Dynamic feed-in uses PROPORTIONAL adjustment (scaled to grid error,
-    damped by 0.8 to prevent overshoot from sensor delay).
-    The configured step size acts as the minimum adjustment.
+    damped and capped to reduce overshoot from sensor and device delay).
+    The configured step size acts as the minimum adjustment granularity.
     """
 
     @pytest.mark.asyncio
@@ -682,11 +1046,11 @@ class TestDynamicFeedIn:
         coordinator._fsm_state_entered_at = time.monotonic() - 120
         coordinator._current_feed_in_power = 0  # starting from 0
 
-        # grid=500, tolerance=50 → error=450, adj=max(50,450*0.8)=360→snap 350
+        # grid=500, tolerance=50 → error=450; damping/cap gives 100W
         await coordinator._run_automatic(
             grid_power=500, solar_power=0, battery_soc=50
         )
-        assert coordinator._current_feed_in_power == 350  # 0 + 350
+        assert coordinator._current_feed_in_power == 100
 
     @pytest.mark.asyncio
     async def test_dynamic_feed_in_ramps_up_from_existing(self, coordinator, mock_hass):
@@ -697,11 +1061,11 @@ class TestDynamicFeedIn:
         coordinator._current_feed_in_power = 300
         coordinator._last_feed_in_power = 300
 
-        # grid=500, tolerance=50 → error=450, adj=350, new=300+350=650
+        # Large error is capped at a 100W increase per cycle.
         await coordinator._run_automatic(
             grid_power=500, solar_power=0, battery_soc=50
         )
-        assert coordinator._current_feed_in_power == 650  # 300 + 350
+        assert coordinator._current_feed_in_power == 400
 
     @pytest.mark.asyncio
     async def test_dynamic_feed_in_clamped_to_max(self, coordinator, mock_hass):
@@ -719,6 +1083,21 @@ class TestDynamicFeedIn:
         assert coordinator._current_feed_in_power == 800
 
     @pytest.mark.asyncio
+    async def test_dynamic_feed_in_caps_large_single_cycle_change(
+        self, coordinator, mock_hass
+    ):
+        """A single extreme grid reading cannot request a large feed-in jump."""
+        coordinator._active_mode = MODE_AUTOMATIC
+        coordinator._fsm_state = STATE_DISCHARGE
+        coordinator._fsm_state_entered_at = time.monotonic() - 120
+
+        await coordinator._run_automatic(
+            grid_power=2000, solar_power=0, battery_soc=50
+        )
+
+        assert coordinator._current_feed_in_power == 100
+
+    @pytest.mark.asyncio
     async def test_dynamic_feed_in_ramps_down_on_export(self, coordinator, mock_hass):
         """Grid export means we're far below target → proportional ramp down."""
         coordinator._active_mode = MODE_AUTOMATIC
@@ -727,11 +1106,11 @@ class TestDynamicFeedIn:
         coordinator._current_feed_in_power = 400
         coordinator._last_feed_in_power = 400
 
-        # grid=-100, tol=50 → error=-150, adj=ceil(150*0.8/50)*50=ceil(2.4)*50=150
+        # grid=-100, tol=50 → adjustment rounds up to the next 50W device step
         await coordinator._run_automatic(
             grid_power=-100, solar_power=0, battery_soc=50
         )
-        assert coordinator._current_feed_in_power == 250  # 400 - 150
+        assert coordinator._current_feed_in_power == 350
 
     @pytest.mark.asyncio
     async def test_dynamic_feed_in_reduces_on_small_export(self, coordinator, mock_hass):
@@ -742,11 +1121,11 @@ class TestDynamicFeedIn:
         coordinator._current_feed_in_power = 800
         coordinator._last_feed_in_power = 800
 
-        # grid=-30, tol=50 → error=-80, adj=ceil(80*0.8/50)*50=ceil(1.28)*50=100
+        # grid=-30, tol=50 → error is damped, then rounded to a 50W step
         await coordinator._run_automatic(
             grid_power=-30, solar_power=0, battery_soc=50
         )
-        assert coordinator._current_feed_in_power == 700  # 800 - 100
+        assert coordinator._current_feed_in_power == 750
 
     @pytest.mark.asyncio
     async def test_dynamic_feed_in_ramps_down_below_tolerance(
@@ -761,9 +1140,9 @@ class TestDynamicFeedIn:
 
         # Set tolerance=150 (target grid import)
         mock_config_entry.options["grid_power_tolerance_discharge"] = 150
+        mock_config_entry.options[OPT_DEADBAND] = 20
 
-        # grid=100, tol=150 → error=-50, deadband=25, error < -25 → ramp down
-        # adj=ceil(50*0.8/50)*50=ceil(0.8)*50=50
+        # grid=100, tol=150 → error=-50, outside the configured 20W deadband
         await coordinator._run_automatic(
             grid_power=100, solar_power=0, battery_soc=50
         )
@@ -782,12 +1161,12 @@ class TestDynamicFeedIn:
 
         # Scenario: 668W consumption, 600W feed-in → 68W grid import
         # tolerance=200 (target), error=68-200=-132, deadband=25
-        # adj=ceil(132*0.8/50)*50=ceil(2.112)*50=150
+        # damped adjustment rounds to one 50W step
         mock_config_entry.options["grid_power_tolerance_discharge"] = 200
         await coordinator._run_automatic(
             grid_power=68, solar_power=0, battery_soc=50
         )
-        assert coordinator._current_feed_in_power == 450  # 600 - 150
+        assert coordinator._current_feed_in_power == 550
 
     @pytest.mark.asyncio
     async def test_dynamic_feed_in_holds_within_tolerance(self, coordinator, mock_hass):
@@ -819,38 +1198,54 @@ class TestDynamicFeedIn:
         assert coordinator._current_feed_in_power == 0
 
     @pytest.mark.asyncio
-    async def test_dynamic_feed_in_converges_fast(self, coordinator, mock_hass):
-        """Proportional adjustment converges within 2-3 cycles instead of 10."""
+    async def test_dynamic_feed_in_limits_each_increase(self, coordinator, mock_hass):
+        """A persistent import ramps feed-in gradually instead of overshooting."""
         coordinator._active_mode = MODE_AUTOMATIC
         coordinator._fsm_state = STATE_DISCHARGE
         coordinator._fsm_state_entered_at = time.monotonic() - 120
         coordinator._current_feed_in_power = 0
 
-        # Simulate 3 cycles with consistent high grid import
-        # Cycle 1: error=450, adj=350 → 350
-        # Cycle 2: error=450, adj=350 → 700
-        # Cycle 3: error=450, adj=350 → 1050 clamped to 800
+        # Simulate 3 cycles with consistent high grid import.
         for i in range(3):
             await coordinator._run_automatic(
                 grid_power=500, solar_power=0, battery_soc=50
             )
-        # Reaches max_feed_in (800) within 3 cycles
-        assert coordinator._current_feed_in_power == 800
+        assert coordinator._current_feed_in_power == 300
 
     @pytest.mark.asyncio
     async def test_dynamic_feed_in_holds_on_small_import_error(self, coordinator, mock_hass):
-        """Small import error (below half-step) rounds to zero → hold steady."""
+        """Small import error below the configured deadband holds steady."""
         coordinator._active_mode = MODE_AUTOMATIC
         coordinator._fsm_state = STATE_DISCHARGE
         coordinator._fsm_state_entered_at = time.monotonic() - 120
         coordinator._current_feed_in_power = 200
         coordinator._last_feed_in_power = 200
 
-        # grid=80, tolerance=50 → error=30, 30*0.8=24 → snap(24,50)=0 → hold
+        # grid=80, tolerance=50 → error=30 is within the default 50W deadband.
         await coordinator._run_automatic(
             grid_power=80, solar_power=0, battery_soc=50
         )
         assert coordinator._current_feed_in_power == 200  # hold, error too small
+
+    @pytest.mark.asyncio
+    async def test_dynamic_feed_in_uses_configured_deadband(
+        self, coordinator, mock_config_entry, mock_hass
+    ):
+        """Configured deadband prevents adjustments for smaller grid errors."""
+        coordinator._active_mode = MODE_AUTOMATIC
+        coordinator._fsm_state = STATE_DISCHARGE
+        coordinator._fsm_state_entered_at = time.monotonic() - 120
+        coordinator._current_feed_in_power = 400
+        coordinator._last_feed_in_power = 400
+        mock_config_entry.options[OPT_DEADBAND] = 200
+        coordinator._config_entry = mock_config_entry
+
+        # Error is 50W above the 50W grid target, below the configured deadband.
+        await coordinator._run_automatic(
+            grid_power=100, solar_power=0, battery_soc=50
+        )
+
+        assert coordinator._current_feed_in_power == 400
 
 
 # ── Solar surplus detection ──────────────────────────────────────────
@@ -867,7 +1262,7 @@ class TestSolarSurplus:
         coordinator._fsm_state_entered_at = time.monotonic() - 120
 
         await coordinator._run_automatic(
-            grid_power=-50, solar_power=300, battery_soc=50
+            grid_power=-200, solar_power=300, battery_soc=50
         )
         assert coordinator._fsm_state == STATE_CHARGE
 
@@ -885,6 +1280,140 @@ class TestSolarSurplus:
         )
         # Should go to DISCHARGE (high consumption) not CHARGE
         assert coordinator._fsm_state == STATE_DISCHARGE
+
+    @pytest.mark.parametrize(
+        ("surplus", "expected"),
+        [
+            (200, {"number.charge_a": 0, "number.charge_b": 200}),
+            (300, {"number.charge_a": 0, "number.charge_b": 300}),
+            (400, {"number.charge_a": 200, "number.charge_b": 200}),
+            (500, {"number.charge_a": 250, "number.charge_b": 250}),
+        ],
+    )
+    @pytest.mark.asyncio
+    async def test_automatic_solar_surplus_distributes_by_soc_and_minimum(
+        self, coordinator, mock_hass, mock_config_entry, surplus, expected
+    ):
+        """Surplus charges the lowest SOC battery first, then shares evenly."""
+        coordinator._active_mode = MODE_AUTOMATIC
+        coordinator._fsm_state = STATE_CHARGE
+        coordinator._batteries = [
+            {
+                CONF_BATTERY_SOC_SENSOR: "sensor.battery_a",
+                CONF_MAX_CHARGE_POWER_NUMBER: "number.charge_a",
+            },
+            {
+                CONF_BATTERY_SOC_SENSOR: "sensor.battery_b",
+                CONF_MAX_CHARGE_POWER_NUMBER: "number.charge_b",
+            },
+        ]
+        mock_config_entry.options[OPT_DEVICE_SETTINGS] = {
+            "sensor.battery_a": {"min_charge": 200, "max_charge": 1200},
+            "sensor.battery_b": {"min_charge": 200, "max_charge": 1200},
+        }
+        coordinator._config_entry = mock_config_entry
+        mock_hass._sensor_states["sensor.battery_a"] = make_state(60)
+        mock_hass._sensor_states["sensor.battery_b"] = make_state(30)
+
+        await coordinator._run_automatic(
+            grid_power=-surplus, solar_power=800, battery_soc=50
+        )
+
+        calls = {
+            call.args[2]["entity_id"]: call.args[2]["value"]
+            for call in mock_hass.services.async_call.call_args_list
+            if call.args[0:2] == ("number", "set_value")
+        }
+        assert calls == expected
+        assert coordinator._current_charge_power == surplus
+
+    @pytest.mark.asyncio
+    async def test_automatic_solar_charge_uses_configured_import_allowance(
+        self, coordinator, mock_hass, mock_config_entry
+    ):
+        """Configured grid-import allowance can cover a shortfall below min charge."""
+        coordinator._active_mode = MODE_AUTOMATIC
+        coordinator._fsm_state = STATE_CHARGE
+        coordinator._batteries = [
+            {
+                CONF_BATTERY_SOC_SENSOR: "sensor.battery_a",
+                CONF_MAX_CHARGE_POWER_NUMBER: "number.charge_a",
+            },
+            {
+                CONF_BATTERY_SOC_SENSOR: "sensor.battery_b",
+                CONF_MAX_CHARGE_POWER_NUMBER: "number.charge_b",
+            },
+        ]
+        mock_config_entry.options[OPT_DEVICE_SETTINGS] = {
+            "sensor.battery_a": {"min_charge": 200, "max_charge": 1200},
+            "sensor.battery_b": {"min_charge": 200, "max_charge": 1200},
+        }
+        mock_config_entry.options[OPT_MAX_GRID_IMPORT_SOLAR_CHARGE] = 200
+        coordinator._config_entry = mock_config_entry
+
+        await coordinator._run_automatic(
+            grid_power=0, solar_power=800, battery_soc=50
+        )
+
+        assert coordinator._current_charge_power == 200
+
+    @pytest.mark.asyncio
+    async def test_solar_mode_allocates_surplus_to_lowest_soc_battery(
+        self, coordinator, mock_hass, mock_config_entry
+    ):
+        """Solar-only mode uses net export and charges the lowest SOC first."""
+        coordinator._batteries = [
+            {
+                CONF_BATTERY_SOC_SENSOR: "sensor.battery_a",
+                CONF_MAX_CHARGE_POWER_NUMBER: "number.charge_a",
+            },
+            {
+                CONF_BATTERY_SOC_SENSOR: "sensor.battery_b",
+                CONF_MAX_CHARGE_POWER_NUMBER: "number.charge_b",
+            },
+        ]
+        mock_config_entry.options[OPT_DEVICE_SETTINGS] = {
+            "sensor.battery_a": {"min_charge": 200},
+            "sensor.battery_b": {"min_charge": 200},
+        }
+        coordinator._config_entry = mock_config_entry
+        mock_hass._sensor_states["sensor.battery_a"] = make_state(60)
+        mock_hass._sensor_states["sensor.battery_b"] = make_state(30)
+
+        await coordinator._run_solar(grid_power=-300, solar_power=800)
+
+        calls = {
+            call.args[2]["entity_id"]: call.args[2]["value"]
+            for call in mock_hass.services.async_call.call_args_list
+            if call.args[0:2] == ("number", "set_value")
+        }
+        assert calls == {"number.charge_a": 0, "number.charge_b": 300}
+        assert coordinator._current_charge_power == 300
+
+    @pytest.mark.asyncio
+    async def test_hold_enters_charge_when_net_export_covers_one_battery_minimum(
+        self, coordinator, mock_config_entry
+    ):
+        """One battery can charge when the surplus covers its own minimum."""
+        coordinator._active_mode = MODE_AUTOMATIC
+        coordinator._fsm_state = STATE_HOLD
+        coordinator._fsm_state_entered_at = time.monotonic() - 120
+        coordinator._current_solar_power = 800
+        coordinator._batteries = [
+            {CONF_BATTERY_SOC_SENSOR: "sensor.battery_a", CONF_MAX_CHARGE_POWER_NUMBER: "number.charge_a"},
+            {CONF_BATTERY_SOC_SENSOR: "sensor.battery_b", CONF_MAX_CHARGE_POWER_NUMBER: "number.charge_b"},
+        ]
+        mock_config_entry.options[OPT_DEVICE_SETTINGS] = {
+            "sensor.battery_a": {"min_charge": 200},
+            "sensor.battery_b": {"min_charge": 200},
+        }
+        coordinator._config_entry = mock_config_entry
+
+        await coordinator._run_automatic(
+            grid_power=-200, solar_power=800, battery_soc=50
+        )
+
+        assert coordinator._fsm_state == STATE_CHARGE
 
 
 # ── Logging ──────────────────────────────────────────────────────────

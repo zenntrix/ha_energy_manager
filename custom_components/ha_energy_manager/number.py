@@ -97,10 +97,17 @@ async def async_setup_entry(
     """Set up Energy Manager number entities."""
     coordinator: EnergyManagerCoordinator = hass.data[DOMAIN][entry.entry_id]
 
+    descriptions = NUMBER_DESCRIPTIONS
+    if coordinator._batteries:
+        descriptions = [
+            desc for desc in NUMBER_DESCRIPTIONS
+            if desc.option_key not in (OPT_MIN_BATTERY_SOC, OPT_MAX_GRID_FEED_IN_POWER)
+        ]
+
     async_add_entities(
         [
             EnergyManagerNumber(coordinator, entry, desc)
-            for desc in NUMBER_DESCRIPTIONS
+            for desc in descriptions
         ]
     )
 

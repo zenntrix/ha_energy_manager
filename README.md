@@ -47,20 +47,21 @@ A Home Assistant custom integration for intelligent battery management of **EcoF
 
 1. Go to **Settings** → **Devices & Services** → **Add Integration**
 2. Search for "Energy Manager"
-3. Select 5 entities from your EcoFlow system:
+3. Create one Energy Manager entry. Select your grid and solar sensors, then select all EcoFlow battery SOC sensors in the **Battery SOC** field. Choose the charge and discharge switches used by the system.
 
 | Entity | Description | Example |
 |--------|-------------|---------|
 | **Grid Power** | Smart meter / grid import sensor (W) | `sensor.smart_meter_power` |
 | **Solar Power** | Solar production sensor (W) | `sensor.powerstream_solar_power` |
-| **Battery SOC** | Battery level (%) | `sensor.delta_2_max_battery_level` |
+| **Battery SOC Sensors** | Select one SOC sensor per battery (%) | `sensor.delta_2_max_battery_level` |
 | **Charge Switch** | AC charging on/off | `switch.delta_2_max_ac_charging` |
 | **Discharge Switch** | Discharge / feed-in on/off | `switch.powerstream_custom_load_enabled` |
 
-The integration **automatically discovers** the remaining control entities:
-- Max AC Charging Power (number)
-- Custom Load Power / Feed-in (number)
-- PowerStream Power Supply Mode (select)
+After selecting the SOC sensors, pair each battery with its **PowerStream Feed-in Power** number and **PowerStream Power Supply Mode** selector. The integration discovers the battery's Max AC Charging Power number from the battery device.
+
+The integration discovers charge and feed-in controls beside each selected battery. In **Configure**, set **Min Battery SOC**, **Max Feed-in Power**, **Max Charge Power**, and **Min Charge Power** for each battery. The controller splits its requested charge or feed-in power evenly across batteries eligible for that action, subject to each battery's limits. A battery at or below its own minimum SOC is excluded from feed-in.
+
+To add or remove batteries later, open the integration's **Reconfigure** action, update the Battery SOC Sensors selection, and confirm the PowerStream pairing for each battery. Limits for batteries that remain selected are preserved.
 
 ### Options
 

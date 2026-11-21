@@ -3,11 +3,11 @@
     "step": {
       "user": {
         "title": "Configure Energy Manager",
-        "description": "Select the sensors from your EcoFlow system.\n\nThe integration will automatically detect the matching control entities (charge power, feed-in power, PowerStream mode) from the same devices.",
+        "description": "Create one Energy Manager entry and select all EcoFlow battery SOC sensors. The next step explicitly pairs each battery with its PowerStream feed-in control and mode selector.",
         "data": {
           "grid_power_sensor": "Grid Power",
           "solar_power_sensor": "Solar Power",
-          "battery_soc_sensor": "Battery SOC",
+          "battery_soc_sensor": "Battery SOC Sensors",
           "charge_switch": "Charge Switch",
           "discharge_switch": "Discharge Switch",
           "ev_charger_switch": "EV Charger Switch (optional)",
@@ -16,11 +16,40 @@
         "data_description": {
           "grid_power_sensor": "Current grid import (+) / export (−) in watts. Usually from your smart meter or energy monitor.",
           "solar_power_sensor": "Current solar production in watts from your PowerStream or inverter.",
-          "battery_soc_sensor": "Battery state of charge in percent (e.g. sensor.delta_2_max_battery_level).",
+          "battery_soc_sensor": "Select one or more battery state of charge sensors (percent), one for each EcoFlow battery to manage.",
           "charge_switch": "Shelly relay that controls AC power to the battery charger. Turned on/off to start/stop charging.",
           "discharge_switch": "Shelly relay that controls AC output from the PowerStream. Turned on/off to start/stop feed-in.",
           "ev_charger_switch": "Switch entity that starts/stops the EV charger. Leave empty to disable EV surplus charging.",
           "ev_charger_current_number": "Number entity to control the EV charging current (amps). Leave empty to disable EV surplus charging."
+        },
+        "error": {
+          "no_battery_selected": "Select at least one battery SOC sensor."
+        }
+      },
+      "reconfigure": {
+        "title": "Configure Energy Manager Batteries",
+        "description": "Choose the EcoFlow battery SOC sensors to manage, then pair each one with its PowerStream. Existing limits are kept for batteries that remain selected.",
+        "data": {
+          "battery_soc_sensor": "Battery SOC Sensors"
+        },
+        "error": {
+          "no_battery_selected": "Select at least one battery SOC sensor."
+        }
+      },
+      "battery_pairing": {
+        "title": "PowerStream pairing: {battery}",
+        "description": "Select the feed-in number and mode selector for {battery}.",
+        "data": {
+          "custom_load_power_number": "PowerStream Feed-in Power",
+          "power_supply_mode_select": "PowerStream Power Supply Mode"
+        }
+      },
+      "reconfigure_pairing": {
+        "title": "PowerStream pairing: {battery}",
+        "description": "Confirm the feed-in number and mode selector connected to {battery}.",
+        "data": {
+          "custom_load_power_number": "PowerStream Feed-in Power",
+          "power_supply_mode_select": "PowerStream Power Supply Mode"
         }
       }
     }
@@ -29,6 +58,7 @@
     "step": {
       "init": {
         "title": "Energy Manager Settings",
+        "description": "Configure shared control behavior, then set battery-specific limits for each selected battery.",
         "data": {
           "feed_in_mode": "Feed-in Mode",
           "feed_in_static_power": "Static Feed-in Power",
@@ -58,6 +88,20 @@
           "charge_power_step": "Step size for charge power adjustments per cycle (hardware constraint).",
           "feed_in_power_step": "Step size for feed-in power adjustments per cycle.",
           "min_dwell_time": "Minimum time to stay in a state before transitioning (seconds)."
+        }
+      },
+      "device": {
+        "title": "Battery limits: {battery}",
+        "description": "Set limits for {battery}.",
+        "data_description": {
+          "battery_capacity_wh": "Battery capacity used with SOC to balance feed-in between batteries."
+        },
+        "data": {
+          "min_battery_soc": "Min Battery SOC",
+          "max_grid_feed_in_power": "Max Feed-in Power",
+          "max_charge_power": "Max Charge Power",
+          "min_charge_power": "Min Charge Power",
+          "battery_capacity_wh": "Battery Capacity (Wh)"
         }
       },
       "ev": {

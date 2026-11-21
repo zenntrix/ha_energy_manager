@@ -10,11 +10,23 @@ from homeassistant.exceptions import ConfigEntryNotReady
 
 from .const import (
     CONF_CHARGE_SWITCH,
+    CONF_BATTERIES,
+    CONF_BATTERY_SOC_SENSOR,
     CONF_CUSTOM_LOAD_POWER_NUMBER,
     CONF_DISCHARGE_SWITCH,
     CONF_MAX_CHARGE_POWER_NUMBER,
     CONF_POWER_SUPPLY_MODE_SELECT,
+    CONF_POWERSTREAM_PAIRED,
     DOMAIN,
+    OPT_DEVICE_SETTINGS,
+    OPT_MIN_BATTERY_SOC,
+    OPT_MAX_GRID_FEED_IN_POWER,
+    OPT_MAX_CHARGE_POWER,
+    OPT_MIN_CHARGE_POWER,
+    DEFAULT_MIN_BATTERY_SOC,
+    DEFAULT_MAX_GRID_FEED_IN_POWER,
+    DEFAULT_MAX_CHARGE_POWER,
+    DEFAULT_MIN_CHARGE_POWER,
     PLATFORMS,
 )
 from .coordinator import EnergyManagerCoordinator
@@ -29,23 +41,37 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     entity_ids = dict(entry.data)
 
     # Auto-discover control entities if not already in config data
-    needs_discovery = (
-        CONF_MAX_CHARGE_POWER_NUMBER not in entity_ids
-        or CONF_CUSTOM_LOAD_POWER_NUMBER not in entity_ids
-        or CONF_POWER_SUPPLY_MODE_SELECT not in entity_ids
+    needs_discovery = CONF_BATTERIES not in entity_ids or (
+        not isinstance(entity_ids.get(CONF_BATTERY_SOC_SENSOR), list)
+        and any(key not in entity_ids for key in (
+            CONF_MAX_CHARGE_POWER_NUMBER,
+            CONF_CUSTOM_LOAD_POWER_NUMBER,
+            CONF_POWER_SUPPLY_MODE_SELECT,
+        ))
+    ) or any(
+        not battery.get(CONF_MAX_CHARGE_POWER_NUMBER)
+        for battery in entity_ids.get(CONF_BATTERIES, [])
     )
 
     if needs_discovery:
         discovered = await async_discover_control_entities(hass, entity_ids)
         entity_ids.update(discovered)
 
+        # Persist the discovered battery/control associations for the per-device
+        # options form. Keep the legacy top-level keys for older installations.
+        if CONF_BATTERIES in entity_ids:
+            hass.config_entries.async_update_entry(entry, data=entity_ids)
+
         # Verify all required entities are available
         missing = []
-        if CONF_MAX_CHARGE_POWER_NUMBER not in entity_ids:
+        if (CONF_MAX_CHARGE_POWER_NUMBER not in entity_ids
+                and not entity_ids.get(CONF_BATTERIES)):
             missing.append("Max Charge Power (number with 'ac_charging_power' in name)")
-        if CONF_CUSTOM_LOAD_POWER_NUMBER not in entity_ids:
+        if (CONF_CUSTOM_LOAD_POWER_NUMBER not in entity_ids
+                and not entity_ids.get(CONF_BATTERIES)):
             missing.append("Custom Load Power (number with 'custom_load_power' in name)")
-        if CONF_POWER_SUPPLY_MODE_SELECT not in entity_ids:
+        if (CONF_POWER_SUPPLY_MODE_SELECT not in entity_ids
+                and not entity_ids.get(CONF_BATTERIES)):
             missing.append("Power Supply Mode (select with 'power_supply_mode' in name)")
 
         if missing:
@@ -53,6 +79,45 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
                 f"Could not auto-discover EcoFlow control entities: {', '.join(missing)}. "
                 f"Make sure the EcoFlow integration is loaded and entities are available."
             )
+
+
+    incomplete = [
+        battery.get(CONF_BATTERY_SOC_SENSOR, "unknown")
+        for battery in entity_ids.get(CONF_BATTERIES, [])
+        if not battery.get(CONF_MAX_CHARGE_POWER_NUMBER)
+    ]
+    if incomplete:
+        raise ConfigEntryNotReady(
+            "Could not find a charge power number on the same device as: "
+            + ", ".join(incomplete)
+        )
+
+    unpaired = [
+        battery.get(CONF_BATTERY_SOC_SENSOR, "unknown")
+        for battery in entity_ids.get(CONF_BATTERIES, [])
+        if len(entity_ids.get(CONF_BATTERIES, [])) > 1
+        and not battery.get(CONF_POWERSTREAM_PAIRED)
+    ]
+    if unpaired:
+        _LOGGER.warning(
+            "PowerStream associations are not confirmed for %s. Use Reconfigure "
+            "to select the feed-in and mode controls for each battery; feed-in "
+            "is disabled for unpaired batteries.",
+            ", ".join(unpaired),
+        )
+
+    if entity_ids.get(CONF_BATTERIES) and not entry.options.get(OPT_DEVICE_SETTINGS):
+        legacy_settings = {
+            battery[CONF_BATTERY_SOC_SENSOR]: {
+                "min_soc": entry.options.get(OPT_MIN_BATTERY_SOC, DEFAULT_MIN_BATTERY_SOC),
+                "max_feed_in": entry.options.get(OPT_MAX_GRID_FEED_IN_POWER, DEFAULT_MAX_GRID_FEED_IN_POWER),
+                "max_charge": entry.options.get(OPT_MAX_CHARGE_POWER, DEFAULT_MAX_CHARGE_POWER),
+                "min_charge": entry.options.get(OPT_MIN_CHARGE_POWER, DEFAULT_MIN_CHARGE_POWER),
+            }
+            for battery in entity_ids[CONF_BATTERIES]
+        }
+        options = {**entry.options, OPT_DEVICE_SETTINGS: legacy_settings}
+        hass.config_entries.async_update_entry(entry, options=options)
 
     # Verify switch entities are configured
     missing_switches = []
