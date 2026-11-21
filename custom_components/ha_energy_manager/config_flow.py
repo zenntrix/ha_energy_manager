@@ -39,6 +39,7 @@ from .const import (
     DEFAULT_EV_MIN_BATTERY_SOC,
     DEFAULT_EV_MIN_EXCESS_POWER,
     DEFAULT_FEED_IN_MODE,
+    DEFAULT_FEED_IN_DEADBAND,
     DEFAULT_FEED_IN_POWER_STEP,
     DEFAULT_FEED_IN_STATIC_POWER,
     DEFAULT_MAX_CHARGE_POWER,
@@ -63,6 +64,7 @@ from .const import (
     OPT_EV_MIN_CHARGING_CURRENT,
     OPT_EV_MIN_EXCESS_POWER,
     OPT_FEED_IN_MODE,
+    OPT_FEED_IN_DEADBAND,
     OPT_FEED_IN_POWER_STEP,
     OPT_FEED_IN_STATIC_POWER,
     OPT_GRID_POWER_TOLERANCE_DISCHARGE,
@@ -243,6 +245,18 @@ def _options_schema(
                     step=10,
                     unit_of_measurement="W",
                     mode=NumberSelectorMode.SLIDER,
+                )
+            ),
+            vol.Required(
+                OPT_FEED_IN_DEADBAND,
+                default=options.get(OPT_FEED_IN_DEADBAND, DEFAULT_FEED_IN_DEADBAND),
+            ): NumberSelector(
+                NumberSelectorConfig(
+                    min=0,
+                    max=200,
+                    step=1,
+                    unit_of_measurement="W",
+                    mode=NumberSelectorMode.BOX,
                 )
             ),
             vol.Required(

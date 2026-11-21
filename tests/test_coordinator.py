@@ -17,6 +17,7 @@ from custom_components.ha_energy_manager.const import (
     CONF_POWER_SUPPLY_MODE_SELECT,
     OPT_DEVICE_SETTINGS,
     OPT_DEADBAND,
+    OPT_FEED_IN_DEADBAND,
     OPT_MAX_GRID_IMPORT_SOLAR_CHARGE,
     DEFAULT_EV_START_DELAY_CYCLES,
     DEFAULT_EV_STOP_DELAY_CYCLES,
@@ -289,6 +290,34 @@ class TestSetChargePower:
         assert coordinator._current_charge_power == 400
 
     @pytest.mark.asyncio
+    async def test_starting_charge_stops_feed_in_first(self, coordinator, mock_hass):
+        """The discharge relay is opened before the charge relay is enabled."""
+        coordinator._last_feed_in_power = 300
+        coordinator._current_feed_in_power = 300
+        coordinator._last_discharge_switch = True
+
+        await coordinator._async_set_charge_power(400)
+
+        calls = mock_hass.services.async_call.call_args_list
+        discharge_off = next(
+            i for i, call in enumerate(calls)
+            if call.args[:2] == ("switch", "turn_off")
+            and call.args[2]["entity_id"] == "switch.discharge"
+        )
+        charge_on = next(
+            i for i, call in enumerate(calls)
+            if call.args[:2] == ("switch", "turn_on")
+            and call.args[2]["entity_id"] == "switch.charge"
+        )
+        assert discharge_off < charge_on
+        feed_in_zero = next(
+            i for i, call in enumerate(calls)
+            if call.args[:2] == ("number", "set_value")
+            and call.args[2] == {"entity_id": "number.custom_load", "value": 0}
+        )
+        assert feed_in_zero < charge_on
+
+    @pytest.mark.asyncio
     async def test_set_charge_power_zero_stops_charging(self, coordinator, mock_hass):
         """Setting charge power to 0 turns off charge switch."""
         await coordinator._async_set_charge_power(0, reason="test")
@@ -445,6 +474,34 @@ class TestSetFeedInPower:
         )
 
     @pytest.mark.asyncio
+    async def test_starting_feed_in_stops_charge_first(self, coordinator, mock_hass):
+        """The charge relay is opened before the discharge relay is enabled."""
+        coordinator._last_charge_power = 300
+        coordinator._current_charge_power = 300
+        coordinator._last_charge_switch = True
+
+        await coordinator._async_set_feed_in_power(300)
+
+        calls = mock_hass.services.async_call.call_args_list
+        charge_off = next(
+            i for i, call in enumerate(calls)
+            if call.args[:2] == ("switch", "turn_off")
+            and call.args[2]["entity_id"] == "switch.charge"
+        )
+        charge_zero = next(
+            i for i, call in enumerate(calls)
+            if call.args[:2] == ("number", "set_value")
+            and call.args[2] == {"entity_id": "number.charge_power", "value": 0}
+        )
+        discharge_on = next(
+            i for i, call in enumerate(calls)
+            if call.args[:2] == ("switch", "turn_on")
+            and call.args[2]["entity_id"] == "switch.discharge"
+        )
+        assert charge_off < discharge_on
+        assert charge_zero < discharge_on
+
+    @pytest.mark.asyncio
     async def test_set_feed_in_zero_turns_off_switch(self, coordinator, mock_hass):
         """Zero feed-in turns off discharge switch."""
         # First set a positive value
@@ -458,11 +515,11 @@ class TestSetFeedInPower:
         assert coordinator._last_feed_in_power == 0
 
     @pytest.mark.asyncio
-    async def test_set_feed_in_snaps_to_50_step(self, coordinator, mock_hass):
-        """Feed-in is snapped to 50W steps."""
+    async def test_set_feed_in_snaps_to_10_step(self, coordinator, mock_hass):
+        """Feed-in is snapped to 10W steps."""
         await coordinator._async_set_feed_in_power(276, reason="test")
         mock_hass.services.async_call.assert_any_call(
-            "number", "set_value", {"entity_id": "number.custom_load", "value": 300}
+            "number", "set_value", {"entity_id": "number.custom_load", "value": 280}
         )
 
     @pytest.mark.asyncio
@@ -519,8 +576,8 @@ class TestSetFeedInPower:
     @pytest.mark.parametrize(
         ("target", "expected"),
         [
-            (600, {"number.load_a": 200, "number.load_b": 400}),
-            (1000, {"number.load_a": 300, "number.load_b": 700}),
+            (600, {"number.load_a": 190, "number.load_b": 410}),
+            (1000, {"number.load_a": 320, "number.load_b": 680}),
         ],
     )
     @pytest.mark.asyncio
@@ -894,6 +951,7 @@ class TestAutomaticMode:
         coordinator._active_mode = MODE_AUTOMATIC
         coordinator._fsm_state = STATE_HOLD
         coordinator._fsm_state_entered_at = time.monotonic() - 120
+        coordinator._config_entry.options["grid_power_tolerance_discharge"] = 50
 
         # grid=30 is within tolerance (50), so no discharge trigger
         await coordinator._run_automatic(
@@ -1046,11 +1104,11 @@ class TestDynamicFeedIn:
         coordinator._fsm_state_entered_at = time.monotonic() - 120
         coordinator._current_feed_in_power = 0  # starting from 0
 
-        # grid=500, tolerance=50 → error=450; damping/cap gives 100W
+        # grid=500, tolerance=50 → error=450; per-cycle cap gives 50W.
         await coordinator._run_automatic(
             grid_power=500, solar_power=0, battery_soc=50
         )
-        assert coordinator._current_feed_in_power == 100
+        assert coordinator._current_feed_in_power == 50
 
     @pytest.mark.asyncio
     async def test_dynamic_feed_in_ramps_up_from_existing(self, coordinator, mock_hass):
@@ -1061,11 +1119,11 @@ class TestDynamicFeedIn:
         coordinator._current_feed_in_power = 300
         coordinator._last_feed_in_power = 300
 
-        # Large error is capped at a 100W increase per cycle.
+        # Large error is capped at a 50W increase per cycle.
         await coordinator._run_automatic(
             grid_power=500, solar_power=0, battery_soc=50
         )
-        assert coordinator._current_feed_in_power == 400
+        assert coordinator._current_feed_in_power == 350
 
     @pytest.mark.asyncio
     async def test_dynamic_feed_in_clamped_to_max(self, coordinator, mock_hass):
@@ -1095,7 +1153,7 @@ class TestDynamicFeedIn:
             grid_power=2000, solar_power=0, battery_soc=50
         )
 
-        assert coordinator._current_feed_in_power == 100
+        assert coordinator._current_feed_in_power == 50
 
     @pytest.mark.asyncio
     async def test_dynamic_feed_in_ramps_down_on_export(self, coordinator, mock_hass):
@@ -1106,26 +1164,26 @@ class TestDynamicFeedIn:
         coordinator._current_feed_in_power = 400
         coordinator._last_feed_in_power = 400
 
-        # grid=-100, tol=50 → adjustment rounds up to the next 50W device step
+        # grid=-100, tol=0 → damped adjustment rounds up to a 30W increment.
         await coordinator._run_automatic(
             grid_power=-100, solar_power=0, battery_soc=50
         )
-        assert coordinator._current_feed_in_power == 350
+        assert coordinator._current_feed_in_power == 370
 
     @pytest.mark.asyncio
     async def test_dynamic_feed_in_reduces_on_small_export(self, coordinator, mock_hass):
-        """Small grid export is still below target → ramp down proportionally."""
+        """Small grid export triggers a small correction toward zero."""
         coordinator._active_mode = MODE_AUTOMATIC
         coordinator._fsm_state = STATE_DISCHARGE
         coordinator._fsm_state_entered_at = time.monotonic() - 120
         coordinator._current_feed_in_power = 800
         coordinator._last_feed_in_power = 800
 
-        # grid=-30, tol=50 → error is damped, then rounded to a 50W step
+        # grid=-30, tol=0 → 10W correction toward zero.
         await coordinator._run_automatic(
             grid_power=-30, solar_power=0, battery_soc=50
         )
-        assert coordinator._current_feed_in_power == 750
+        assert coordinator._current_feed_in_power == 790
 
     @pytest.mark.asyncio
     async def test_dynamic_feed_in_ramps_down_below_tolerance(
@@ -1140,13 +1198,13 @@ class TestDynamicFeedIn:
 
         # Set tolerance=150 (target grid import)
         mock_config_entry.options["grid_power_tolerance_discharge"] = 150
-        mock_config_entry.options[OPT_DEADBAND] = 20
+        mock_config_entry.options[OPT_FEED_IN_DEADBAND] = 20
 
-        # grid=100, tol=150 → error=-50, outside the configured 20W deadband
+        # grid=0, tol=150 → error=-150, beyond the stability deadband.
         await coordinator._run_automatic(
-            grid_power=100, solar_power=0, battery_soc=50
+            grid_power=0, solar_power=0, battery_soc=50
         )
-        assert coordinator._current_feed_in_power == 350  # 400 - 50
+        assert coordinator._current_feed_in_power == 360  # 400 - 40
 
     @pytest.mark.asyncio
     async def test_dynamic_feed_in_ramps_down_large_gap(
@@ -1160,13 +1218,12 @@ class TestDynamicFeedIn:
         coordinator._last_feed_in_power = 600
 
         # Scenario: 668W consumption, 600W feed-in → 68W grid import
-        # tolerance=200 (target), error=68-200=-132, deadband=25
-        # damped adjustment rounds to one 50W step
+        # tolerance=200 (target), error=68-200=-132; adjustment rounds to 40W.
         mock_config_entry.options["grid_power_tolerance_discharge"] = 200
         await coordinator._run_automatic(
             grid_power=68, solar_power=0, battery_soc=50
         )
-        assert coordinator._current_feed_in_power == 550
+        assert coordinator._current_feed_in_power == 560
 
     @pytest.mark.asyncio
     async def test_dynamic_feed_in_holds_within_tolerance(self, coordinator, mock_hass):
@@ -1177,9 +1234,9 @@ class TestDynamicFeedIn:
         coordinator._current_feed_in_power = 300
         coordinator._last_feed_in_power = 300
 
-        # grid=30, tolerance=50 → within band → hold at 300
+        # Grid is within the ±10W feed-in deadband around zero.
         await coordinator._run_automatic(
-            grid_power=30, solar_power=0, battery_soc=50
+            grid_power=10, solar_power=0, battery_soc=50
         )
         assert coordinator._current_feed_in_power == 300
 
@@ -1191,9 +1248,9 @@ class TestDynamicFeedIn:
         coordinator._fsm_state_entered_at = time.monotonic() - 120
         coordinator._current_feed_in_power = 0
 
-        # grid=30, tolerance=50 → within tolerance → hold at 0
+        # Grid is within the ±10W feed-in deadband around zero.
         await coordinator._run_automatic(
-            grid_power=30, solar_power=0, battery_soc=50
+            grid_power=10, solar_power=0, battery_soc=50
         )
         assert coordinator._current_feed_in_power == 0
 
@@ -1210,7 +1267,7 @@ class TestDynamicFeedIn:
             await coordinator._run_automatic(
                 grid_power=500, solar_power=0, battery_soc=50
             )
-        assert coordinator._current_feed_in_power == 300
+        assert coordinator._current_feed_in_power == 150
 
     @pytest.mark.asyncio
     async def test_dynamic_feed_in_holds_on_small_import_error(self, coordinator, mock_hass):
@@ -1221,9 +1278,9 @@ class TestDynamicFeedIn:
         coordinator._current_feed_in_power = 200
         coordinator._last_feed_in_power = 200
 
-        # grid=80, tolerance=50 → error=30 is within the default 50W deadband.
+        # Grid is within the ±10W feed-in deadband around zero.
         await coordinator._run_automatic(
-            grid_power=80, solar_power=0, battery_soc=50
+            grid_power=10, solar_power=0, battery_soc=50
         )
         assert coordinator._current_feed_in_power == 200  # hold, error too small
 
@@ -1237,10 +1294,10 @@ class TestDynamicFeedIn:
         coordinator._fsm_state_entered_at = time.monotonic() - 120
         coordinator._current_feed_in_power = 400
         coordinator._last_feed_in_power = 400
-        mock_config_entry.options[OPT_DEADBAND] = 200
+        mock_config_entry.options[OPT_FEED_IN_DEADBAND] = 200
         coordinator._config_entry = mock_config_entry
 
-        # Error is 50W above the 50W grid target, below the configured deadband.
+        # Error is below the configured feed-in deadband.
         await coordinator._run_automatic(
             grid_power=100, solar_power=0, battery_soc=50
         )
