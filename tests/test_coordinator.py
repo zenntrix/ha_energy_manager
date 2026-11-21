@@ -294,7 +294,8 @@ class TestSetChargePower:
         """The discharge relay is opened before the charge relay is enabled."""
         coordinator._last_feed_in_power = 300
         coordinator._current_feed_in_power = 300
-        coordinator._last_discharge_switch = True
+        coordinator._last_discharge_switch = False  # stale cache; relay is externally on
+        mock_hass._sensor_states["switch.discharge"] = make_state("on")
 
         await coordinator._async_set_charge_power(400)
 
@@ -478,7 +479,8 @@ class TestSetFeedInPower:
         """The charge relay is opened before the discharge relay is enabled."""
         coordinator._last_charge_power = 300
         coordinator._current_charge_power = 300
-        coordinator._last_charge_switch = True
+        coordinator._last_charge_switch = False  # stale cache; relay is externally on
+        mock_hass._sensor_states["switch.charge"] = make_state("on")
 
         await coordinator._async_set_feed_in_power(300)
 
@@ -500,6 +502,107 @@ class TestSetFeedInPower:
         )
         assert charge_off < discharge_on
         assert charge_zero < discharge_on
+
+    @pytest.mark.asyncio
+    async def test_starting_feed_in_clears_stale_per_battery_charge_targets(
+        self, coordinator, mock_hass, mock_config_entry
+    ):
+        """Restarted charge setpoints are zeroed before either PowerStream feeds in."""
+        coordinator._batteries = [
+            {
+                CONF_BATTERY_SOC_SENSOR: "sensor.battery_a",
+                CONF_MAX_CHARGE_POWER_NUMBER: "number.charge_a",
+                CONF_CUSTOM_LOAD_POWER_NUMBER: "number.load_a",
+                CONF_POWER_SUPPLY_MODE_SELECT: "select.mode_a",
+                CONF_POWERSTREAM_PAIRED: True,
+            },
+            {
+                CONF_BATTERY_SOC_SENSOR: "sensor.battery_b",
+                CONF_MAX_CHARGE_POWER_NUMBER: "number.charge_b",
+                CONF_CUSTOM_LOAD_POWER_NUMBER: "number.load_b",
+                CONF_POWER_SUPPLY_MODE_SELECT: "select.mode_b",
+                CONF_POWERSTREAM_PAIRED: True,
+            },
+        ]
+        coordinator._config_entry = mock_config_entry
+        coordinator._last_charge_switch = True
+        mock_hass._sensor_states.update(
+            {
+                "sensor.battery_a": make_state(80),
+                "sensor.battery_b": make_state(80),
+                "number.charge_a": make_state(200),
+                "number.charge_b": make_state(200),
+            }
+        )
+
+        await coordinator._async_set_feed_in_power(300)
+
+        calls = mock_hass.services.async_call.call_args_list
+        discharge_on = next(
+            i for i, call in enumerate(calls)
+            if call.args[:2] == ("switch", "turn_on")
+            and call.args[2]["entity_id"] == "switch.discharge"
+        )
+        for entity_id in ("number.charge_a", "number.charge_b"):
+            cleared = next(
+                i for i, call in enumerate(calls)
+                if call.args[:2] == ("number", "set_value")
+                and call.args[2] == {"entity_id": entity_id, "value": 0}
+            )
+            assert cleared < discharge_on
+
+    @pytest.mark.asyncio
+    async def test_feed_in_fails_closed_if_charge_relay_cannot_be_stopped(
+        self, coordinator, mock_hass
+    ):
+        """Never enable feed-in when turning off charging fails."""
+        coordinator._last_charge_switch = None
+
+        async def fail_charge_off(domain, service, data):
+            if domain == "switch" and service == "turn_off" and data["entity_id"] == "switch.charge":
+                raise RuntimeError("relay unavailable")
+
+        mock_hass.services.async_call.side_effect = fail_charge_off
+        success = await coordinator._async_set_feed_in_power(300)
+
+        assert success is False
+        assert not any(
+            call.args[:2] == ("switch", "turn_on")
+            and call.args[2]["entity_id"] == "switch.discharge"
+            for call in mock_hass.services.async_call.call_args_list
+        )
+
+    @pytest.mark.asyncio
+    async def test_feed_in_fails_closed_if_battery_charge_target_cannot_be_cleared(
+        self, coordinator, mock_hass, mock_config_entry
+    ):
+        """Never start feed-in if a battery's AC charge target remains nonzero."""
+        coordinator._batteries = [
+            {
+                CONF_BATTERY_SOC_SENSOR: "sensor.battery_a",
+                CONF_MAX_CHARGE_POWER_NUMBER: "number.charge_a",
+                CONF_CUSTOM_LOAD_POWER_NUMBER: "number.load_a",
+                CONF_POWERSTREAM_PAIRED: True,
+            },
+        ]
+        coordinator._config_entry = mock_config_entry
+        mock_hass._sensor_states.update(
+            {"sensor.battery_a": make_state(80), "number.charge_a": make_state(200)}
+        )
+
+        async def fail_charge_target(domain, service, data):
+            if domain == "number" and service == "set_value" and data["entity_id"] == "number.charge_a":
+                raise RuntimeError("charge control unavailable")
+
+        mock_hass.services.async_call.side_effect = fail_charge_target
+        success = await coordinator._async_set_feed_in_power(300)
+
+        assert success is False
+        assert not any(
+            call.args[:2] == ("switch", "turn_on")
+            and call.args[2]["entity_id"] == "switch.discharge"
+            for call in mock_hass.services.async_call.call_args_list
+        )
 
     @pytest.mark.asyncio
     async def test_set_feed_in_zero_turns_off_switch(self, coordinator, mock_hass):
@@ -799,6 +902,7 @@ class TestSwitchSetters:
     async def test_charge_switch_skips_redundant(self, coordinator, mock_hass):
         """Charge switch skips redundant call."""
         await coordinator._async_set_charge_switch(True)
+        mock_hass._sensor_states["switch.charge"] = make_state("on")
         mock_hass.services.async_call.reset_mock()
         await coordinator._async_set_charge_switch(True)
         mock_hass.services.async_call.assert_not_called()
@@ -825,6 +929,7 @@ class TestSwitchSetters:
     async def test_discharge_switch_skips_redundant(self, coordinator, mock_hass):
         """Discharge switch skips redundant call."""
         await coordinator._async_set_discharge_switch(True)
+        mock_hass._sensor_states["switch.discharge"] = make_state("on")
         mock_hass.services.async_call.reset_mock()
         await coordinator._async_set_discharge_switch(True)
         mock_hass.services.async_call.assert_not_called()

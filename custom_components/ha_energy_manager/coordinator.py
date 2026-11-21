@@ -660,11 +660,15 @@ class EnergyManagerCoordinator(DataUpdateCoordinator[EnergyManagerData]):
         except Exception:  # noqa: BLE001
             _LOGGER.warning("Failed to set power supply mode to %s", mode)
 
-    async def _async_set_charge_switch(self, on: bool) -> None:
-        """Turn the charge Shelly relay on or off."""
-        if self._last_charge_switch == on:
-            return
+    async def _async_set_charge_switch(self, on: bool) -> bool:
+        """Set the charge relay and report whether the request succeeded."""
         entity_id = self._entity_ids[CONF_CHARGE_SWITCH]
+        expected_state = "on" if on else "off"
+        if (
+            self._last_charge_switch == on
+            and self._get_entity_state_str(entity_id) == expected_state
+        ):
+            return True
         try:
             await self.hass.services.async_call(
                 "switch",
@@ -672,14 +676,20 @@ class EnergyManagerCoordinator(DataUpdateCoordinator[EnergyManagerData]):
                 {"entity_id": entity_id},
             )
             self._last_charge_switch = on
+            return True
         except Exception:  # noqa: BLE001
             _LOGGER.warning("Failed to set charge switch to %s", on)
+            return False
 
-    async def _async_set_discharge_switch(self, on: bool) -> None:
-        """Turn the discharge Shelly relay on or off."""
-        if self._last_discharge_switch == on:
-            return
+    async def _async_set_discharge_switch(self, on: bool) -> bool:
+        """Set the discharge relay and report whether the request succeeded."""
         entity_id = self._entity_ids[CONF_DISCHARGE_SWITCH]
+        expected_state = "on" if on else "off"
+        if (
+            self._last_discharge_switch == on
+            and self._get_entity_state_str(entity_id) == expected_state
+        ):
+            return True
         try:
             await self.hass.services.async_call(
                 "switch",
@@ -687,10 +697,12 @@ class EnergyManagerCoordinator(DataUpdateCoordinator[EnergyManagerData]):
                 {"entity_id": entity_id},
             )
             self._last_discharge_switch = on
+            return True
         except Exception:  # noqa: BLE001
             _LOGGER.warning("Failed to set discharge switch to %s", on)
+            return False
 
-    async def _async_set_charge_power(self, value: float, reason: str = "") -> None:
+    async def _async_set_charge_power(self, value: float, reason: str = "") -> bool:
         """Set the max AC charging power (snapped to step).
 
         When value is <= 0, the charge Shelly relay is turned OFF to physically
@@ -700,7 +712,9 @@ class EnergyManagerCoordinator(DataUpdateCoordinator[EnergyManagerData]):
         """
         if value <= 0:
             # Stop charging: turn off Shelly relay (physically cuts AC to charger)
-            await self._async_set_charge_switch(False)
+            if not await self._async_set_charge_switch(False):
+                return False
+            charge_targets_cleared = True
             if self._batteries:
                 for battery in self._batteries:
                     sensor = battery[CONF_BATTERY_SOC_SENSOR]
@@ -719,6 +733,7 @@ class EnergyManagerCoordinator(DataUpdateCoordinator[EnergyManagerData]):
                             self._last_device_charge[sensor] = 0
                         except Exception:  # noqa: BLE001
                             _LOGGER.warning("Failed to clear charge power for %s", sensor)
+                            charge_targets_cleared = False
             else:
                 entity_id = self._entity_ids[CONF_MAX_CHARGE_POWER_NUMBER]
                 if (
@@ -732,13 +747,14 @@ class EnergyManagerCoordinator(DataUpdateCoordinator[EnergyManagerData]):
                         )
                     except Exception:  # noqa: BLE001
                         _LOGGER.warning("Failed to clear charge power for %s", entity_id)
+                        charge_targets_cleared = False
             if self._last_charge_power != 0:
                 old_power = self._last_charge_power or 0
                 self._last_charge_power = 0
                 self._current_charge_power = 0
                 log_reason = reason or f"Charge power {old_power}W → 0W (stopped)"
                 self._log_decision(LOG_POWER_ADJUST, log_reason)
-            return
+            return charge_targets_cleared
 
         if self._batteries:
             device_settings = self._get_option(OPT_DEVICE_SETTINGS, {})
@@ -747,7 +763,7 @@ class EnergyManagerCoordinator(DataUpdateCoordinator[EnergyManagerData]):
                 if battery.get(CONF_MAX_CHARGE_POWER_NUMBER)
             ]
             if not available:
-                return
+                return False
             # SOC ordering gives the lowest battery first claim on small solar
             # surpluses. Add another battery only when each active battery can
             # reach its own minimum; once active, divide evenly and redistribute
@@ -763,7 +779,7 @@ class EnergyManagerCoordinator(DataUpdateCoordinator[EnergyManagerData]):
                 if self._get_device_soc(battery[CONF_BATTERY_SOC_SENSOR]) < 100
             ]
             if not eligible:
-                await self._async_set_charge_switch(False)
+                switch_off_ok = await self._async_set_charge_switch(False)
                 for battery in available:
                     sensor = battery[CONF_BATTERY_SOC_SENSOR]
                     if self._last_device_charge.get(sensor, 0) != 0:
@@ -775,7 +791,7 @@ class EnergyManagerCoordinator(DataUpdateCoordinator[EnergyManagerData]):
                             },
                         )
                         self._last_device_charge[sensor] = 0
-                return
+                return switch_off_ok
 
             active = [eligible[0]]
             for battery in eligible[1:]:
@@ -826,8 +842,10 @@ class EnergyManagerCoordinator(DataUpdateCoordinator[EnergyManagerData]):
             if any(allocations.values()):
                 # The setters enforce mutual exclusion as a second line of
                 # defense in case a mode transition calls them out of order.
-                await self._async_set_feed_in_power(0)
-            await self._async_set_charge_switch(any(allocations.values()))
+                if not await self._async_set_feed_in_power(0):
+                    return False
+            if not await self._async_set_charge_switch(any(allocations.values())):
+                return False
             total = 0.0
             for battery in available:
                 sensor = battery[CONF_BATTERY_SOC_SENSOR]
@@ -850,20 +868,26 @@ class EnergyManagerCoordinator(DataUpdateCoordinator[EnergyManagerData]):
                 total += applied
             self._last_charge_power = total
             self._current_charge_power = total
-            return
+            return True
 
         max_power = self._get_option(OPT_MAX_CHARGE_POWER, DEFAULT_MAX_CHARGE_POWER)
         min_power = self._get_option(OPT_MIN_CHARGE_POWER, DEFAULT_MIN_CHARGE_POWER)
         snapped = self._snap_to_step(max(min(value, max_power), min_power))
-        if self._last_charge_power == snapped:
-            return
+        # Enforce the interlock even when the requested charge target is
+        # unchanged; an earlier command or restart may have left both active.
+        if not await self._async_set_feed_in_power(0):
+            return False
+        if (
+            self._last_charge_power == snapped
+            and self._last_charge_switch is True
+            and self._get_entity_state_str(self._entity_ids[CONF_CHARGE_SWITCH]) == "on"
+        ):
+            return True
         old_power = self._last_charge_power or 0
 
-        # Stop any discharge before enabling AC charging.
-        await self._async_set_feed_in_power(0)
-
         # Turn on Shelly relay, set PS mode to storage, apply charge power
-        await self._async_set_charge_switch(True)
+        if not await self._async_set_charge_switch(True):
+            return False
         await self._async_set_power_supply_mode(PS_MODE_PRIORITIZE_STORAGE)
         entity_id = self._entity_ids[CONF_MAX_CHARGE_POWER_NUMBER]
         try:
@@ -874,14 +898,14 @@ class EnergyManagerCoordinator(DataUpdateCoordinator[EnergyManagerData]):
             )
         except Exception:  # noqa: BLE001
             _LOGGER.warning("Failed to set charge power to %dW", snapped)
-            return
+            return False
         self._last_charge_power = snapped
         self._current_charge_power = snapped
-
         log_reason = reason or f"Charge power {old_power}W → {snapped}W"
         self._log_decision(LOG_POWER_ADJUST, log_reason)
+        return True
 
-    async def _async_set_feed_in_power(self, value: float, reason: str = "") -> None:
+    async def _async_set_feed_in_power(self, value: float, reason: str = "") -> bool:
         """Set the custom load (feed-in) power.
 
         When value is > 0, the discharge Shelly relay is turned ON,
@@ -976,7 +1000,8 @@ class EnergyManagerCoordinator(DataUpdateCoordinator[EnergyManagerData]):
                             _LOGGER.warning("Failed to stop feed-in for %s", load_entity)
 
             if not eligible or snapped <= 0:
-                await self._async_set_discharge_switch(False)
+                if not await self._async_set_discharge_switch(False):
+                    return False
                 for load_entity in groups:
                     current_value = self._get_entity_state_float(load_entity)
                     if (
@@ -992,10 +1017,12 @@ class EnergyManagerCoordinator(DataUpdateCoordinator[EnergyManagerData]):
                             _LOGGER.warning("Failed to clear feed-in for %s", load_entity)
                     self._last_device_feed_in[load_entity] = 0
                 self._last_feed_in_power = self._current_feed_in_power = 0
-                return
+                return True
             # Turn off charging before enabling any paired PowerStream output.
-            await self._async_set_charge_power(0)
-            await self._async_set_discharge_switch(True)
+            if not await self._async_set_charge_power(0):
+                return False
+            if not await self._async_set_discharge_switch(True):
+                return False
 
             # Share discharge according to usable stored energy above each
             # battery's reserve, while redistributing any capped share.
@@ -1045,7 +1072,7 @@ class EnergyManagerCoordinator(DataUpdateCoordinator[EnergyManagerData]):
                         _LOGGER.warning("Failed to set feed-in power for %s", load_entity)
                 total += applied
             self._last_feed_in_power = self._current_feed_in_power = total
-            return
+            return True
 
         _LOGGER.debug(
             "set_feed_in_power called: value=%.1f, snapped=%d, last=%s, max=%d",
@@ -1054,7 +1081,8 @@ class EnergyManagerCoordinator(DataUpdateCoordinator[EnergyManagerData]):
 
         if snapped <= 0:
             # Stop feeding in: turn off Shelly relay (physically cuts AC output)
-            await self._async_set_discharge_switch(False)
+            if not await self._async_set_discharge_switch(False):
+                return False
             entity_id = self._entity_ids[CONF_CUSTOM_LOAD_POWER_NUMBER]
             if (
                 (self._last_feed_in_power or 0) > 0
@@ -1073,18 +1101,24 @@ class EnergyManagerCoordinator(DataUpdateCoordinator[EnergyManagerData]):
                 self._current_feed_in_power = 0
                 log_reason = reason or f"Feed-in power {old_power}W → 0W (stopped)"
                 self._log_decision(LOG_POWER_ADJUST, log_reason)
-            return
+            return True
 
         # Feed-in > 0: turn on Shelly, set PS mode to supply, set custom load power
-        await self._async_set_charge_power(0)
-        await self._async_set_discharge_switch(True)
-        await self._async_set_power_supply_mode(PS_MODE_PRIORITIZE_SUPPLY)
-
-        if self._last_feed_in_power == snapped:
+        # Enforce the interlock even for an unchanged target.
+        if not await self._async_set_charge_power(0):
+            return False
+        if (
+            self._last_feed_in_power == snapped
+            and self._last_discharge_switch is True
+            and self._get_entity_state_str(self._entity_ids[CONF_DISCHARGE_SWITCH]) == "on"
+        ):
             _LOGGER.debug(
                 "set_feed_in_power skipped: value %dW unchanged", snapped
             )
-            return
+            return True
+        if not await self._async_set_discharge_switch(True):
+            return False
+        await self._async_set_power_supply_mode(PS_MODE_PRIORITIZE_SUPPLY)
         old_power = self._last_feed_in_power or 0
         entity_id = self._entity_ids[CONF_CUSTOM_LOAD_POWER_NUMBER]
         _LOGGER.debug(
@@ -1099,12 +1133,13 @@ class EnergyManagerCoordinator(DataUpdateCoordinator[EnergyManagerData]):
             )
         except Exception:  # noqa: BLE001
             _LOGGER.warning("Failed to set feed-in power to %dW", snapped)
-            return
+            return False
         self._last_feed_in_power = snapped
         self._current_feed_in_power = snapped
 
         log_reason = reason or f"Feed-in power {old_power}W → {snapped}W"
         self._log_decision(LOG_POWER_ADJUST, log_reason)
+        return True
 
     # ── EV charging ──────────────────────────────────────────────────────
 
