@@ -54,7 +54,32 @@
   "options": {
     "step": {
       "init": {
-        "title": "Energy Manager Einstellungen",
+        "title": "Energy Manager",
+        "description": "Wähle den Bereich aus, den du konfigurieren möchtest."
+      },
+      "ev": {
+        "title": "EV-Ladeeinstellungen",
+        "data": {
+          "ev_charger_switch": "EV-Ladeschalter",
+          "ev_charger_current_number": "EV-Ladestrom-Steuerung",
+          "ev_min_battery_soc": "Min. Batterie-SOC für EV-Laden",
+          "ev_min_excess_power": "Min. Überschussleistung zum Starten",
+          "ev_min_charging_current": "Min. Ladestrom",
+          "ev_max_charging_current": "Max. Ladestrom",
+          "ev_charger_phases": "Ladephasen"
+        },
+        "data_description": {
+          "ev_charger_switch": "Schalter-Entität zum Starten/Stoppen des EV-Ladegeräts. Leer lassen um EV-Laden zu deaktivieren.",
+          "ev_charger_current_number": "Zahlen-Entität zur Steuerung des Ladestroms (Ampere). Leer lassen um EV-Laden zu deaktivieren.",
+          "ev_min_battery_soc": "Batterie muss diesen SOC erreichen, bevor EV-Überschussladen startet (100% = erst vollständig laden).",
+          "ev_min_excess_power": "Minimaler Solar-Überschuss (Watt) bevor das EV-Laden startet.",
+          "ev_min_charging_current": "Minimaler Ladestrom in Ampere (üblicherweise 6A gemäß EV-Standard).",
+          "ev_max_charging_current": "Maximaler Ladestrom in Ampere.",
+          "ev_charger_phases": "Anzahl der Phasen des EV-Ladegeräts."
+        }
+      },
+      "manager_settings": {
+        "title": "Energy-Manager-Einstellungen",
         "data": {
           "feed_in_mode": "Einspeise-Modus",
           "feed_in_static_power": "Statische Einspeiseleistung",
@@ -84,28 +109,29 @@
           "charge_power_step": "Schrittweite für Ladeleistungs-Anpassungen pro Zyklus (Hardware-Beschränkung).",
           "feed_in_power_step": "Schrittweite für Einspeiseleistungs-Anpassungen pro Zyklus.",
           "min_dwell_time": "Mindestzeit in einem Zustand vor dem Wechsel (Sekunden)."
-        }
+        },
+        "description": "Konfiguriere das gemeinsame Steuerungsverhalten."
       },
-      "ev": {
-        "title": "EV-Ladeeinstellungen",
+      "device": {
+        "title": "Batterieeinstellungen: {battery}",
+        "description": "Lege die Grenzwerte für {battery} fest.",
         "data": {
-          "ev_charger_switch": "EV-Ladeschalter",
-          "ev_charger_current_number": "EV-Ladestrom-Steuerung",
-          "ev_min_battery_soc": "Min. Batterie-SOC für EV-Laden",
-          "ev_min_excess_power": "Min. Überschussleistung zum Starten",
-          "ev_min_charging_current": "Min. Ladestrom",
-          "ev_max_charging_current": "Max. Ladestrom",
-          "ev_charger_phases": "Ladephasen"
+          "min_battery_soc": "Min. Batterie-SOC",
+          "max_grid_feed_in_power": "Max. Einspeiseleistung",
+          "max_charge_power": "Max. Ladeleistung",
+          "min_charge_power": "Min. Ladeleistung",
+          "battery_capacity_wh": "Batteriekapazität (Wh)"
         },
         "data_description": {
-          "ev_charger_switch": "Schalter-Entität zum Starten/Stoppen des EV-Ladegeräts. Leer lassen um EV-Laden zu deaktivieren.",
-          "ev_charger_current_number": "Zahlen-Entität zur Steuerung des Ladestroms (Ampere). Leer lassen um EV-Laden zu deaktivieren.",
-          "ev_min_battery_soc": "Batterie muss diesen SOC erreichen, bevor EV-Überschussladen startet (100% = erst vollständig laden).",
-          "ev_min_excess_power": "Minimaler Solar-Überschuss (Watt) bevor das EV-Laden startet.",
-          "ev_min_charging_current": "Minimaler Ladestrom in Ampere (üblicherweise 6A gemäß EV-Standard).",
-          "ev_max_charging_current": "Maximaler Ladestrom in Ampere.",
-          "ev_charger_phases": "Anzahl der Phasen des EV-Ladegeräts."
+          "battery_capacity_wh": "Batteriekapazität zur SOC-basierten Verteilung der Einspeisung zwischen Batterien."
         }
+      }
+    },
+    "options": {
+      "init": {
+        "manager_settings": "Energy-Manager-Einstellungen",
+        "battery_settings": "Batterieeinstellungen",
+        "ev": "EV-Ladeeinstellungen"
       }
     }
   },

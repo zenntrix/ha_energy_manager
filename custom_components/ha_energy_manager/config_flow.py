@@ -714,28 +714,37 @@ class EnergyManagerOptionsFlow(OptionsFlow):
     async def async_step_init(
         self, user_input: dict[str, Any] | None = None
     ) -> FlowResult:
-        """Handle the battery options step."""
-        if user_input is not None:
-            batteries = self._config_entry.data.get(CONF_BATTERIES, [])
-            self._battery_list = batteries
-            self._battery_options = user_input
-            if batteries:
-                sensor = batteries[0][CONF_BATTERY_SOC_SENSOR]
-                battery_name = _battery_name(self.hass, sensor)
-                self.context.setdefault("title_placeholders", {})["battery"] = battery_name
-                return self.async_show_form(
-                    step_id="device",
-                    data_schema=_device_options_schema(
-                        self._device_settings.get(sensor, {})
-                    ),
-                    description_placeholders={"battery": battery_name},
-                )
-            return await self.async_step_ev()
+        """Show the configuration sections, like a Home Assistant integration menu."""
+        menu_options = ["manager_settings", "ev"]
+        if self._config_entry.data.get(CONF_BATTERIES):
+            menu_options.insert(1, "battery_settings")
+        return self.async_show_menu(step_id="init", menu_options=menu_options)
 
+    async def async_step_manager_settings(
+        self, user_input: dict[str, Any] | None = None
+    ) -> FlowResult:
+        """Configure shared Energy Manager behavior."""
+        if user_input is not None:
+            return self.async_create_entry(
+                title="", data={**self._config_entry.options, **user_input}
+            )
         return self.async_show_form(
-            step_id="init",
-            data_schema=_options_schema(self._config_entry.options, self._config_entry.data.get(CONF_BATTERIES, [])),
+            step_id="manager_settings",
+            data_schema=_options_schema(
+                self._config_entry.options,
+                self._config_entry.data.get(CONF_BATTERIES, []),
+            ),
         )
+
+    async def async_step_battery_settings(
+        self, user_input: dict[str, Any] | None = None
+    ) -> FlowResult:
+        """Begin editing per-battery limits."""
+        self._battery_list = self._config_entry.data.get(CONF_BATTERIES, [])
+        self._device_index = 0
+        if not self._battery_list:
+            return self.async_abort(reason="no_batteries")
+        return await self.async_step_device(user_input)
 
     async def async_step_device(
         self, user_input: dict[str, Any] | None = None
@@ -753,8 +762,13 @@ class EnergyManagerOptionsFlow(OptionsFlow):
             }
             self._device_index += 1
             if self._device_index >= len(batteries):
-                self._battery_options[OPT_DEVICE_SETTINGS] = self._device_settings
-                return await self.async_step_ev()
+                return self.async_create_entry(
+                    title="",
+                    data={
+                        **self._config_entry.options,
+                        OPT_DEVICE_SETTINGS: self._device_settings,
+                    },
+                )
 
         sensor = batteries[self._device_index][CONF_BATTERY_SOC_SENSOR]
         battery_name = _battery_name(self.hass, sensor)
@@ -770,7 +784,7 @@ class EnergyManagerOptionsFlow(OptionsFlow):
     ) -> FlowResult:
         """Handle the EV charging options step."""
         if user_input is not None:
-            merged = {**self._battery_options, **user_input}
+            merged = {**self._config_entry.options, **user_input}
             return self.async_create_entry(title="", data=merged)
 
         return self.async_show_form(
