@@ -55,7 +55,12 @@
     "step": {
       "init": {
         "title": "Energy Manager",
-        "description": "Wähle den Bereich aus, den du konfigurieren möchtest."
+        "description": "Wähle den Bereich aus, den du konfigurieren möchtest.",
+        "menu_options": {
+          "manager_settings": "Energy-Manager-Einstellungen",
+          "battery_settings": "Batterieeinstellungen",
+          "ev": "EV-Ladeeinstellungen"
+        }
       },
       "ev": {
         "title": "EV-Ladeeinstellungen",
@@ -125,13 +130,6 @@
         "data_description": {
           "battery_capacity_wh": "Batteriekapazität zur SOC-basierten Verteilung der Einspeisung zwischen Batterien."
         }
-      }
-    },
-    "options": {
-      "init": {
-        "manager_settings": "Energy-Manager-Einstellungen",
-        "battery_settings": "Batterieeinstellungen",
-        "ev": "EV-Ladeeinstellungen"
       }
     }
   },

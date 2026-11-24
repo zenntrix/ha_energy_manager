@@ -58,7 +58,12 @@
     "step": {
       "init": {
         "title": "Energy Manager",
-        "description": "Choose which part of Energy Manager you want to configure."
+        "description": "Choose which part of Energy Manager you want to configure.",
+        "menu_options": {
+          "manager_settings": "Energy Manager Settings",
+          "battery_settings": "Battery Settings",
+          "ev": "EV Charging Settings"
+        }
       },
       "device": {
         "title": "Battery limits: {battery}",
@@ -130,13 +135,6 @@
           "feed_in_power_step": "Step size for feed-in power adjustments per cycle.",
           "min_dwell_time": "Minimum time to stay in a state before transitioning (seconds)."
         }
-      }
-    },
-    "options": {
-      "init": {
-        "manager_settings": "Energy Manager Settings",
-        "battery_settings": "Battery Settings",
-        "ev": "EV Charging Settings"
       }
     }
   },
