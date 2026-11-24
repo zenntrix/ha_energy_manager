@@ -9,6 +9,7 @@ import pytest
 
 from custom_components.ha_energy_manager.const import (
     CONF_BATTERY_SOC_SENSOR,
+    CONF_BATTERY_CHARGE_SWITCH,
     CONF_BATTERIES,
     CONF_CHARGE_SWITCH,
     CONF_CUSTOM_LOAD_POWER_NUMBER,
@@ -139,10 +140,12 @@ class TestBatterySOCProtection:
         coordinator._batteries = [
             {
                 CONF_BATTERY_SOC_SENSOR: "sensor.battery_a",
+                CONF_BATTERY_CHARGE_SWITCH: "switch.charge_a",
                 CONF_MAX_CHARGE_POWER_NUMBER: "number.charge_a",
             },
             {
                 CONF_BATTERY_SOC_SENSOR: "sensor.battery_b",
+                CONF_BATTERY_CHARGE_SWITCH: "switch.charge_b",
                 CONF_MAX_CHARGE_POWER_NUMBER: "number.charge_b",
             },
         ]
@@ -290,6 +293,48 @@ class TestSetChargePower:
         assert coordinator._current_charge_power == 400
 
     @pytest.mark.asyncio
+    async def test_charge_allocation_uses_each_batterys_charge_switch(
+        self, coordinator, mock_hass, mock_config_entry
+    ):
+        """Only the battery assigned a positive target has its switch enabled."""
+        coordinator._batteries = [
+            {
+                CONF_BATTERY_SOC_SENSOR: "sensor.battery_low",
+                CONF_BATTERY_CHARGE_SWITCH: "switch.charge_low",
+                CONF_MAX_CHARGE_POWER_NUMBER: "number.charge_low",
+            },
+            {
+                CONF_BATTERY_SOC_SENSOR: "sensor.battery_high",
+                CONF_BATTERY_CHARGE_SWITCH: "switch.charge_high",
+                CONF_MAX_CHARGE_POWER_NUMBER: "number.charge_high",
+            },
+        ]
+        coordinator._config_entry = mock_config_entry
+        mock_hass._sensor_states.update(
+            {
+                "sensor.battery_low": make_state(20),
+                "sensor.battery_high": make_state(80),
+                "switch.charge_low": make_state("off"),
+                "switch.charge_high": make_state("off"),
+            }
+        )
+
+        await coordinator._async_set_charge_power(300)
+
+        mock_hass.services.async_call.assert_any_call(
+            "switch", "turn_on", {"entity_id": "switch.charge_low"}
+        )
+        mock_hass.services.async_call.assert_any_call(
+            "switch", "turn_off", {"entity_id": "switch.charge_high"}
+        )
+        mock_hass.services.async_call.assert_any_call(
+            "number", "set_value", {"entity_id": "number.charge_low", "value": 300}
+        )
+        mock_hass.services.async_call.assert_any_call(
+            "number", "set_value", {"entity_id": "number.charge_high", "value": 0}
+        )
+
+    @pytest.mark.asyncio
     async def test_starting_charge_stops_feed_in_first(self, coordinator, mock_hass):
         """The discharge relay is opened before the charge relay is enabled."""
         coordinator._last_feed_in_power = 300
@@ -388,11 +433,13 @@ class TestSetChargePower:
         coordinator._batteries = [
             {
                 CONF_BATTERY_SOC_SENSOR: "sensor.battery_a",
+                CONF_BATTERY_CHARGE_SWITCH: "switch.charge_a",
                 CONF_MAX_CHARGE_POWER_NUMBER: "number.charge_a",
                 CONF_POWER_SUPPLY_MODE_SELECT: "select.mode_a",
             },
             {
                 CONF_BATTERY_SOC_SENSOR: "sensor.battery_b",
+                CONF_BATTERY_CHARGE_SWITCH: "switch.charge_b",
                 CONF_MAX_CHARGE_POWER_NUMBER: "number.charge_b",
                 CONF_POWER_SUPPLY_MODE_SELECT: "select.mode_b",
             },
@@ -511,6 +558,7 @@ class TestSetFeedInPower:
         coordinator._batteries = [
             {
                 CONF_BATTERY_SOC_SENSOR: "sensor.battery_a",
+                CONF_BATTERY_CHARGE_SWITCH: "switch.charge_a",
                 CONF_MAX_CHARGE_POWER_NUMBER: "number.charge_a",
                 CONF_CUSTOM_LOAD_POWER_NUMBER: "number.load_a",
                 CONF_POWER_SUPPLY_MODE_SELECT: "select.mode_a",
@@ -518,6 +566,7 @@ class TestSetFeedInPower:
             },
             {
                 CONF_BATTERY_SOC_SENSOR: "sensor.battery_b",
+                CONF_BATTERY_CHARGE_SWITCH: "switch.charge_b",
                 CONF_MAX_CHARGE_POWER_NUMBER: "number.charge_b",
                 CONF_CUSTOM_LOAD_POWER_NUMBER: "number.load_b",
                 CONF_POWER_SUPPLY_MODE_SELECT: "select.mode_b",
@@ -532,6 +581,8 @@ class TestSetFeedInPower:
                 "sensor.battery_b": make_state(80),
                 "number.charge_a": make_state(200),
                 "number.charge_b": make_state(200),
+                "switch.charge_a": make_state("on"),
+                "switch.charge_b": make_state("on"),
             }
         )
 
@@ -550,6 +601,13 @@ class TestSetFeedInPower:
                 and call.args[2] == {"entity_id": entity_id, "value": 0}
             )
             assert cleared < discharge_on
+        for entity_id in ("switch.charge_a", "switch.charge_b"):
+            switch_off = next(
+                i for i, call in enumerate(calls)
+                if call.args[:2] == ("switch", "turn_off")
+                and call.args[2]["entity_id"] == entity_id
+            )
+            assert switch_off < discharge_on
 
     @pytest.mark.asyncio
     async def test_feed_in_fails_closed_if_charge_relay_cannot_be_stopped(

@@ -12,6 +12,7 @@ from .const import (
     CONF_CHARGE_SWITCH,
     CONF_BATTERIES,
     CONF_BATTERY_SOC_SENSOR,
+    CONF_BATTERY_CHARGE_SWITCH,
     CONF_CUSTOM_LOAD_POWER_NUMBER,
     CONF_DISCHARGE_SWITCH,
     CONF_MAX_CHARGE_POWER_NUMBER,
@@ -119,10 +120,22 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
         options = {**entry.options, OPT_DEVICE_SETTINGS: legacy_settings}
         hass.config_entries.async_update_entry(entry, options=options)
 
-    # Verify switch entities are configured
+    # New entries use a separate charge switch for each battery. Keep support
+    # for older entries that only stored one shared charger relay.
+    missing_charge_switches = [
+        battery.get(CONF_BATTERY_SOC_SENSOR, "unknown")
+        for battery in entity_ids.get(CONF_BATTERIES, [])
+        if not battery.get(CONF_BATTERY_CHARGE_SWITCH)
+    ]
+    if missing_charge_switches and CONF_CHARGE_SWITCH not in entity_ids:
+        raise ConfigEntryNotReady(
+            "Missing per-battery charge switches for: "
+            + ", ".join(missing_charge_switches)
+            + ". Use Reconfigure to select a charge switch for each battery."
+        )
+
+    # Verify the shared discharge switch remains configured.
     missing_switches = []
-    if CONF_CHARGE_SWITCH not in entity_ids:
-        missing_switches.append("Charge Switch (Shelly relay for charger)")
     if CONF_DISCHARGE_SWITCH not in entity_ids:
         missing_switches.append("Discharge Switch (Shelly relay for PowerStream)")
     if missing_switches:

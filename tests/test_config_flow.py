@@ -4,11 +4,13 @@ from unittest.mock import MagicMock
 
 from custom_components.ha_energy_manager.config_flow import (
     _battery_name,
+    _battery_pairing_schema,
     _make_battery_association,
     _updated_battery_config,
 )
 from custom_components.ha_energy_manager.const import (
     CONF_BATTERY_SOC_SENSOR,
+    CONF_BATTERY_CHARGE_SWITCH,
     CONF_BATTERIES,
     CONF_CUSTOM_LOAD_POWER_NUMBER,
     CONF_MAX_CHARGE_POWER_NUMBER,
@@ -20,6 +22,14 @@ from custom_components.ha_energy_manager.const import (
     OPT_MIN_BATTERY_SOC,
     OPT_MIN_CHARGE_POWER,
 )
+
+
+def test_battery_pairing_form_exposes_a_charge_switch_per_battery():
+    """Each battery's pairing step includes its own charge relay selector."""
+    schema = _battery_pairing_schema()
+    fields = {marker.schema for marker in schema.schema}
+
+    assert CONF_BATTERY_CHARGE_SWITCH in fields
 
 
 def test_reconfigure_preserves_retained_limits_and_defaults_new_batteries():
@@ -84,6 +94,7 @@ def test_battery_association_records_selected_powerstream_controls():
     association = _make_battery_association(
         "sensor.battery_a",
         {
+            CONF_BATTERY_CHARGE_SWITCH: "switch.battery_a_charge",
             CONF_CUSTOM_LOAD_POWER_NUMBER: "number.powerstream_a_feed_in",
             CONF_POWER_SUPPLY_MODE_SELECT: "select.powerstream_a_mode",
         },
@@ -92,6 +103,7 @@ def test_battery_association_records_selected_powerstream_controls():
 
     assert association == {
         CONF_BATTERY_SOC_SENSOR: "sensor.battery_a",
+        CONF_BATTERY_CHARGE_SWITCH: "switch.battery_a_charge",
         CONF_CUSTOM_LOAD_POWER_NUMBER: "number.powerstream_a_feed_in",
         CONF_POWER_SUPPLY_MODE_SELECT: "select.powerstream_a_mode",
         CONF_POWERSTREAM_PAIRED: True,

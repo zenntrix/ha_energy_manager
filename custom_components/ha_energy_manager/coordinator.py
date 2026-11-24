@@ -17,6 +17,7 @@ from homeassistant.helpers.update_coordinator import DataUpdateCoordinator
 
 from .const import (
     CONF_BATTERY_SOC_SENSOR,
+    CONF_BATTERY_CHARGE_SWITCH,
     CONF_BATTERIES,
     CONF_CHARGE_SWITCH,
     CONF_CUSTOM_LOAD_POWER_NUMBER,
@@ -153,6 +154,7 @@ class EnergyManagerCoordinator(DataUpdateCoordinator[EnergyManagerData]):
         self._entity_ids = entity_ids if entity_ids is not None else dict(config_entry.data)
         self._batteries = self._entity_ids.get(CONF_BATTERIES, [])
         self._last_device_charge: dict[str, float] = {}
+        self._last_device_charge_switch: dict[str, bool] = {}
         self._last_device_feed_in: dict[str, float] = {}
         self._last_valid_device_soc: dict[str, float] = {}
 
@@ -214,7 +216,7 @@ class EnergyManagerCoordinator(DataUpdateCoordinator[EnergyManagerData]):
         self._reset_tracking()
         self._reset_ev_state()
         try:
-            await self._async_set_charge_switch(False)
+            await self._async_set_charge_power(0)
         except Exception:  # noqa: BLE001
             _LOGGER.warning("Failed to turn off charge switch during shutdown")
         try:
@@ -237,6 +239,7 @@ class EnergyManagerCoordinator(DataUpdateCoordinator[EnergyManagerData]):
         self._last_charge_switch = None
         self._last_discharge_switch = None
         self._last_device_charge.clear()
+        self._last_device_charge_switch.clear()
         self._last_device_feed_in.clear()
 
     def _reset_ev_state(self) -> None:
@@ -681,6 +684,36 @@ class EnergyManagerCoordinator(DataUpdateCoordinator[EnergyManagerData]):
             _LOGGER.warning("Failed to set charge switch to %s", on)
             return False
 
+    async def _async_set_battery_charge_switch(
+        self, battery: dict[str, Any], on: bool
+    ) -> bool:
+        """Set one battery's charge switch, with legacy shared-switch fallback."""
+        sensor = battery[CONF_BATTERY_SOC_SENSOR]
+        entity_id = battery.get(CONF_BATTERY_CHARGE_SWITCH)
+        if not entity_id:
+            if CONF_CHARGE_SWITCH in self._entity_ids:
+                return await self._async_set_charge_switch(on)
+            _LOGGER.error("No charge switch is configured for %s", sensor)
+            return False
+
+        expected_state = "on" if on else "off"
+        if (
+            self._last_device_charge_switch.get(sensor) == on
+            and self._get_entity_state_str(entity_id) == expected_state
+        ):
+            return True
+        try:
+            await self.hass.services.async_call(
+                "switch",
+                "turn_on" if on else "turn_off",
+                {"entity_id": entity_id},
+            )
+            self._last_device_charge_switch[sensor] = on
+            return True
+        except Exception:  # noqa: BLE001
+            _LOGGER.warning("Failed to set charge switch %s for %s", entity_id, sensor)
+            return False
+
     async def _async_set_discharge_switch(self, on: bool) -> bool:
         """Set the discharge relay and report whether the request succeeded."""
         entity_id = self._entity_ids[CONF_DISCHARGE_SWITCH]
@@ -705,19 +738,19 @@ class EnergyManagerCoordinator(DataUpdateCoordinator[EnergyManagerData]):
     async def _async_set_charge_power(self, value: float, reason: str = "") -> bool:
         """Set the max AC charging power (snapped to step).
 
-        When value is <= 0, the charge Shelly relay is turned OFF to physically
-        stop charging (EcoFlow software cannot reliably stop charging).
-        When value is > 0, the charge Shelly relay is turned ON, PS mode is set
-        to storage, and the power value is applied.
+        When value is <= 0, each battery's charge switch and power target are
+        turned off. Positive multi-battery targets activate only the switches
+        paired with batteries receiving charge.
         """
         if value <= 0:
-            # Stop charging: turn off Shelly relay (physically cuts AC to charger)
-            if not await self._async_set_charge_switch(False):
-                return False
+            # Stop each battery independently. Legacy entries fall back to
+            # their single shared charger relay.
             charge_targets_cleared = True
             if self._batteries:
                 for battery in self._batteries:
                     sensor = battery[CONF_BATTERY_SOC_SENSOR]
+                    if not await self._async_set_battery_charge_switch(battery, False):
+                        charge_targets_cleared = False
                     entity_id = battery.get(CONF_MAX_CHARGE_POWER_NUMBER)
                     if not entity_id:
                         continue
@@ -735,6 +768,8 @@ class EnergyManagerCoordinator(DataUpdateCoordinator[EnergyManagerData]):
                             _LOGGER.warning("Failed to clear charge power for %s", sensor)
                             charge_targets_cleared = False
             else:
+                if not await self._async_set_charge_switch(False):
+                    return False
                 entity_id = self._entity_ids[CONF_MAX_CHARGE_POWER_NUMBER]
                 if (
                     (self._last_charge_power or 0) > 0
@@ -779,19 +814,7 @@ class EnergyManagerCoordinator(DataUpdateCoordinator[EnergyManagerData]):
                 if self._get_device_soc(battery[CONF_BATTERY_SOC_SENSOR]) < 100
             ]
             if not eligible:
-                switch_off_ok = await self._async_set_charge_switch(False)
-                for battery in available:
-                    sensor = battery[CONF_BATTERY_SOC_SENSOR]
-                    if self._last_device_charge.get(sensor, 0) != 0:
-                        await self.hass.services.async_call(
-                            "number", "set_value",
-                            {
-                                "entity_id": battery[CONF_MAX_CHARGE_POWER_NUMBER],
-                                "value": 0,
-                            },
-                        )
-                        self._last_device_charge[sensor] = 0
-                return switch_off_ok
+                return await self._async_set_charge_power(0)
 
             active = [eligible[0]]
             for battery in eligible[1:]:
@@ -844,9 +867,14 @@ class EnergyManagerCoordinator(DataUpdateCoordinator[EnergyManagerData]):
                 # defense in case a mode transition calls them out of order.
                 if not await self._async_set_feed_in_power(0):
                     return False
-            if not await self._async_set_charge_switch(any(allocations.values())):
-                return False
+            # Switch off batteries that are not receiving charge before
+            # changing targets. Active switches stay on across adjustments.
+            for battery in available:
+                sensor = battery[CONF_BATTERY_SOC_SENSOR]
+                if not allocations[sensor] and not await self._async_set_battery_charge_switch(battery, False):
+                    return False
             total = 0.0
+            charge_targets_set = True
             for battery in available:
                 sensor = battery[CONF_BATTERY_SOC_SENSOR]
                 applied = int(round(allocations[sensor]))
@@ -865,7 +893,16 @@ class EnergyManagerCoordinator(DataUpdateCoordinator[EnergyManagerData]):
                         self._last_device_charge[sensor] = applied
                     except Exception:  # noqa: BLE001
                         _LOGGER.warning("Failed to set charge power for %s", sensor)
+                        charge_targets_set = False
                 total += applied
+            if not charge_targets_set:
+                await self._async_set_charge_power(0)
+                return False
+            for battery in available:
+                sensor = battery[CONF_BATTERY_SOC_SENSOR]
+                if allocations[sensor] and not await self._async_set_battery_charge_switch(battery, True):
+                    await self._async_set_charge_power(0)
+                    return False
             self._last_charge_power = total
             self._current_charge_power = total
             return True
@@ -1456,8 +1493,7 @@ class EnergyManagerCoordinator(DataUpdateCoordinator[EnergyManagerData]):
         """Execute hold mode logic."""
         await self._async_set_feed_in_power(0)
         await self._async_set_charge_power(0, reason="Hold mode, charge stopped")
-        # Ensure both Shelly relays are off
-        await self._async_set_charge_switch(False)
+        # Ensure the shared discharge relay is off as well.
         await self._async_set_discharge_switch(False)
         self._fsm_state = STATE_HOLD
 

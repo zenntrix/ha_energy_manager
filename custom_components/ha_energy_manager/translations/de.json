@@ -3,12 +3,11 @@
     "step": {
       "user": {
         "title": "Energy Manager konfigurieren",
-        "description": "Wähle die Sensoren deines EcoFlow-Systems aus.\n\nDie Integration erkennt automatisch die passenden Steuerungs-Entitäten (Ladeleistung, Einspeiseleistung, PowerStream-Modus) der gleichen Geräte.",
+        "description": "Wähle die Sensoren deines EcoFlow-Systems aus. Anschließend ordnest du jeder Batterie einen eigenen Ladeschalter und die zugehörigen PowerStream-Steuerungen zu.",
         "data": {
           "grid_power_sensor": "Netzleistung",
           "solar_power_sensor": "Solarleistung",
           "battery_soc_sensor": "Batterie-SOC",
-          "charge_switch": "Lade-Schalter",
           "discharge_switch": "Entlade-Schalter",
           "ev_charger_switch": "EV-Ladeschalter (optional)",
           "ev_charger_current_number": "EV-Ladestrom-Steuerung (optional)"
@@ -17,10 +16,37 @@
           "grid_power_sensor": "Aktueller Netzbezug (+) / Einspeisung (−) in Watt. Üblicherweise von deinem Smartmeter oder Energiemonitor.",
           "solar_power_sensor": "Aktuelle Solarproduktion in Watt von deinem PowerStream oder Wechselrichter.",
           "battery_soc_sensor": "Batterie-Ladezustand in Prozent (z.B. sensor.delta_2_max_battery_level).",
-          "charge_switch": "Shelly-Relais, das die AC-Stromversorgung des Batterieladegeräts steuert. Wird ein-/ausgeschaltet um das Laden zu starten/stoppen.",
           "discharge_switch": "Shelly-Relais, das den AC-Ausgang des PowerStream steuert. Wird ein-/ausgeschaltet um die Einspeisung zu starten/stoppen.",
           "ev_charger_switch": "Schalter-Entität zum Starten/Stoppen des EV-Ladegeräts. Leer lassen um EV-Überschussladen zu deaktivieren.",
           "ev_charger_current_number": "Zahlen-Entität zur Steuerung des EV-Ladestroms (Ampere). Leer lassen um EV-Überschussladen zu deaktivieren."
+        }
+      },
+      "reconfigure": {
+        "title": "Energy-Manager-Batterien konfigurieren",
+        "description": "Wähle die Batterien aus. Ordne anschließend jeder Batterie einen Ladeschalter und PowerStream-Steuerungen zu.",
+        "data": {
+          "battery_soc_sensor": "Batterie-SOC-Sensoren"
+        },
+        "error": {
+          "no_battery_selected": "Wähle mindestens einen Batterie-SOC-Sensor aus."
+        }
+      },
+      "battery_pairing": {
+        "title": "Batteriesteuerung: {battery}",
+        "description": "Wähle den Ladeschalter und die PowerStream-Steuerungen für {battery}.",
+        "data": {
+          "battery_charge_switch": "Ladeschalter der Batterie",
+          "custom_load_power_number": "PowerStream-Einspeiseleistung",
+          "power_supply_mode_select": "PowerStream-Versorgungsmodus"
+        }
+      },
+      "reconfigure_pairing": {
+        "title": "Batteriesteuerung: {battery}",
+        "description": "Bestätige den Ladeschalter und die PowerStream-Steuerungen für {battery}.",
+        "data": {
+          "battery_charge_switch": "Ladeschalter der Batterie",
+          "custom_load_power_number": "PowerStream-Einspeiseleistung",
+          "power_supply_mode_select": "PowerStream-Versorgungsmodus"
         }
       }
     }

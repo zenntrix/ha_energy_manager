@@ -22,6 +22,7 @@ from homeassistant.helpers.selector import (
 
 from .const import (
     CONF_BATTERY_SOC_SENSOR,
+    CONF_BATTERY_CHARGE_SWITCH,
     CONF_BATTERIES,
     CONF_CHARGE_SWITCH,
     CONF_CUSTOM_LOAD_POWER_NUMBER,
@@ -89,9 +90,6 @@ ENTITY_SCHEMA = vol.Schema(
         ),
         vol.Required(CONF_BATTERY_SOC_SENSOR): EntitySelector(
             EntitySelectorConfig(domain="sensor", multiple=True)
-        ),
-        vol.Required(CONF_CHARGE_SWITCH): EntitySelector(
-            EntitySelectorConfig(domain="switch")
         ),
         vol.Required(CONF_DISCHARGE_SWITCH): EntitySelector(
             EntitySelectorConfig(domain="switch")
@@ -372,7 +370,7 @@ def _updated_battery_config(
 
 
 def _reconfigure_schema(entry_data: dict[str, Any]) -> vol.Schema:
-    """Build the battery selector with the current selection suggested."""
+    """Build the battery sensor selector."""
     sensors = entry_data.get(CONF_BATTERY_SOC_SENSOR, [])
     if isinstance(sensors, str):
         sensors = [sensors]
@@ -383,16 +381,17 @@ def _reconfigure_schema(entry_data: dict[str, Any]) -> vol.Schema:
                 default=sensors,
             ): EntitySelector(
                 EntitySelectorConfig(domain="sensor", multiple=True)
-            )
+            ),
         }
     )
 
 
 def _battery_pairing_schema(defaults: dict[str, Any] | None = None) -> vol.Schema:
-    """Build selectors that explicitly associate one PowerStream to a battery."""
+    """Build selectors for one battery's charge switch and PowerStream controls."""
     defaults = defaults or {}
     fields: dict[Any, Any] = {}
     for key, domain in (
+        (CONF_BATTERY_CHARGE_SWITCH, "switch"),
         (CONF_CUSTOM_LOAD_POWER_NUMBER, "number"),
         (CONF_POWER_SUPPLY_MODE_SELECT, "select"),
     ):
@@ -407,9 +406,10 @@ def _make_battery_association(
     user_input: dict[str, Any],
     charge_power_entity: str | None = None,
 ) -> dict[str, Any]:
-    """Build an explicit association between an SOC sensor and its PowerStream."""
+    """Build an explicit association between a battery and its controls."""
     battery = {
         CONF_BATTERY_SOC_SENSOR: sensor,
+        CONF_BATTERY_CHARGE_SWITCH: user_input[CONF_BATTERY_CHARGE_SWITCH],
         CONF_CUSTOM_LOAD_POWER_NUMBER: user_input[CONF_CUSTOM_LOAD_POWER_NUMBER],
         CONF_POWER_SUPPLY_MODE_SELECT: user_input[CONF_POWER_SUPPLY_MODE_SELECT],
         CONF_POWERSTREAM_PAIRED: True,
@@ -494,7 +494,11 @@ class EnergyManagerConfigFlow(ConfigFlow, domain=DOMAIN):
                 )
 
         sensor = self._pairing_sensors[self._pairing_index]
-        defaults = self._existing_battery_pairs.get(sensor, {})
+        defaults = dict(self._existing_battery_pairs.get(sensor, {}))
+        if not defaults.get(CONF_BATTERY_CHARGE_SWITCH):
+            legacy_charge_switch = self._reconfigure_entry.data.get(CONF_CHARGE_SWITCH)
+            if legacy_charge_switch:
+                defaults[CONF_BATTERY_CHARGE_SWITCH] = legacy_charge_switch
         battery_name = _battery_name(self.hass, sensor)
         self.context.setdefault("title_placeholders", {})["battery"] = battery_name
         return self.async_show_form(

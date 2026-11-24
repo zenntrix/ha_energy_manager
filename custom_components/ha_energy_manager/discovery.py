@@ -10,6 +10,7 @@ from homeassistant.helpers import entity_registry as er
 
 from .const import (
     CONF_BATTERY_SOC_SENSOR,
+    CONF_BATTERY_CHARGE_SWITCH,
     CONF_BATTERIES,
     CONF_CUSTOM_LOAD_POWER_NUMBER,
     CONF_GRID_POWER_SENSOR,
@@ -52,7 +53,7 @@ async def async_discover_control_entities(
 
     Strategy:
     1. Find devices from configured sensor entities
-    2. Preserve the user-selected PowerStream controls for each battery
+    2. Preserve the user-selected charge switch and PowerStream controls
     3. Discover battery charge-power controls from that battery's device
 
     Returns discovered legacy IDs and per-battery associations.
@@ -154,6 +155,7 @@ async def async_discover_control_entities(
                 key: configured[key]
                 for key in (
                     CONF_MAX_CHARGE_POWER_NUMBER,
+                    CONF_BATTERY_CHARGE_SWITCH,
                     CONF_CUSTOM_LOAD_POWER_NUMBER,
                     CONF_POWER_SUPPLY_MODE_SELECT,
                     CONF_POWERSTREAM_PAIRED,
