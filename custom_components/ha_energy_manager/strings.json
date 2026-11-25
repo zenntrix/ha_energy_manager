@@ -62,7 +62,10 @@
         "menu_options": {
           "manager_settings": "Energy Manager Settings",
           "battery_settings": "Battery Settings",
-          "ev": "EV Charging Settings"
+          "ev": "EV Charging Settings",
+          "household_fuse": "Household Fuse",
+          "circuits": "Circuits",
+          "circuit_devices": "Circuit Devices"
         }
       },
       "device": {
@@ -134,6 +137,92 @@
           "charge_power_step": "Step size for charge power adjustments per cycle (hardware constraint).",
           "feed_in_power_step": "Step size for feed-in power adjustments per cycle.",
           "min_dwell_time": "Minimum time to stay in a state before transitioning (seconds)."
+        }
+      },
+      "household_fuse": {
+        "title": "Household Fuse",
+        "data": {
+          "household_fuse_amps": "Overall Household Fuse (A)"
+        }
+      },
+      "circuits": {
+        "title": "Circuits",
+        "description": "Add multiple circuits, update existing details, or save and return.",
+        "menu_options": {
+          "add_circuit": "Add a circuit",
+          "edit_circuit": "Edit a circuit",
+          "done_circuits": "Save circuits"
+        }
+      },
+      "add_circuit": {
+        "title": "Add or Edit Circuit",
+        "data": {
+          "name": "Name",
+          "fuse_amps": "Fuse Rating (A)",
+          "power_sensor": "Circuit Power Sensor",
+          "current_measurement": "Current Measurement"
+        },
+        "data_description": {
+          "power_sensor": "Power sensor for this circuit. Current is derived from power divided by voltage when voltage measurement is selected.",
+          "current_measurement": "Choose a current sensor in amps or a voltage sensor in volts; amps are calculated from power and voltage."
+        }
+      },
+      "circuit_amps": {
+        "title": "Circuit Current Sensor",
+        "data": {
+          "current_sensor": "Circuit Current Sensor (A)"
+        }
+      },
+      "circuit_volts": {
+        "title": "Circuit Voltage Sensor",
+        "data": {
+          "voltage_sensor": "Circuit Voltage Sensor (V)"
+        }
+      },
+      "edit_circuit": {
+        "title": "Edit Circuit",
+        "data": {
+          "circuit_id": "Circuit"
+        }
+      },
+      "circuit_devices": {
+        "title": "Circuit Devices",
+        "description": "Add devices and assign each to a circuit.",
+        "menu_options": {
+          "add_circuit_device": "Add a device",
+          "edit_circuit_device": "Edit a device",
+          "done_circuit_devices": "Save devices"
+        }
+      },
+      "add_circuit_device": {
+        "title": "Add or Edit Circuit Device",
+        "data": {
+          "name": "Device Name",
+          "circuit_id": "Circuit",
+          "priority": "Priority",
+          "max_draw_watts": "Max Draw (W)",
+          "switch": "Device On/Off Entity",
+          "controllable_watts": "Controllable Watts"
+        },
+        "data_description": {
+          "priority": "Numeric priority used when deciding which loads to manage first.",
+          "max_draw_watts": "Maximum expected device draw in watts.",
+          "controllable_watts": "Choose yes to configure the power range and control entity."
+        }
+      },
+      "device_watt_controls": {
+        "title": "Device Watt Controls",
+        "data": {
+          "minimum_watts": "Minimum Watts",
+          "maximum_watts": "Maximum Watts",
+          "step_watts": "Step (W)",
+          "control_entity": "Power Control Entity"
+        }
+      },
+      "edit_circuit_device": {
+        "title": "Edit Circuit Device",
+        "data": {
+          "device_id": "Device"
         }
       }
     }

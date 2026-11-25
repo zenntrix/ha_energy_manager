@@ -59,7 +59,10 @@
         "menu_options": {
           "manager_settings": "Energy-Manager-Einstellungen",
           "battery_settings": "Batterieeinstellungen",
-          "ev": "EV-Ladeeinstellungen"
+          "ev": "EV-Ladeeinstellungen",
+          "household_fuse": "Hausanschlusssicherung",
+          "circuits": "Stromkreise",
+          "circuit_devices": "Stromkreisgeräte"
         }
       },
       "ev": {
@@ -129,6 +132,92 @@
         },
         "data_description": {
           "battery_capacity_wh": "Batteriekapazität zur SOC-basierten Verteilung der Einspeisung zwischen Batterien."
+        }
+      },
+      "household_fuse": {
+        "title": "Hausanschlusssicherung",
+        "data": {
+          "household_fuse_amps": "Gesamte Hausanschlusssicherung (A)"
+        }
+      },
+      "circuits": {
+        "title": "Stromkreise",
+        "description": "Füge Stromkreise hinzu, bearbeite sie oder speichere die Änderungen.",
+        "menu_options": {
+          "add_circuit": "Stromkreis hinzufügen",
+          "edit_circuit": "Stromkreis bearbeiten",
+          "done_circuits": "Stromkreise speichern"
+        }
+      },
+      "add_circuit": {
+        "title": "Stromkreis hinzufügen oder bearbeiten",
+        "data": {
+          "name": "Name",
+          "fuse_amps": "Sicherungswert (A)",
+          "power_sensor": "Leistungssensor des Stromkreises",
+          "current_measurement": "Strommessung"
+        },
+        "data_description": {
+          "power_sensor": "Leistungssensor dieses Stromkreises. Bei Spannungsmessung wird der Strom aus Leistung geteilt durch Spannung berechnet.",
+          "current_measurement": "Wähle einen Stromsensor in Ampere oder einen Spannungssensor in Volt."
+        }
+      },
+      "circuit_amps": {
+        "title": "Stromsensor des Stromkreises",
+        "data": {
+          "current_sensor": "Stromsensor des Stromkreises (A)"
+        }
+      },
+      "circuit_volts": {
+        "title": "Spannungssensor des Stromkreises",
+        "data": {
+          "voltage_sensor": "Spannungssensor des Stromkreises (V)"
+        }
+      },
+      "edit_circuit": {
+        "title": "Stromkreis bearbeiten",
+        "data": {
+          "circuit_id": "Stromkreis"
+        }
+      },
+      "circuit_devices": {
+        "title": "Stromkreisgeräte",
+        "description": "Füge Geräte hinzu und ordne sie einem Stromkreis zu.",
+        "menu_options": {
+          "add_circuit_device": "Gerät hinzufügen",
+          "edit_circuit_device": "Gerät bearbeiten",
+          "done_circuit_devices": "Geräte speichern"
+        }
+      },
+      "add_circuit_device": {
+        "title": "Stromkreisgerät hinzufügen oder bearbeiten",
+        "data": {
+          "name": "Gerätename",
+          "circuit_id": "Stromkreis",
+          "priority": "Priorität",
+          "max_draw_watts": "Max. Verbrauch (W)",
+          "switch": "Ein/Aus-Entität des Geräts",
+          "controllable_watts": "Leistung regelbar"
+        },
+        "data_description": {
+          "priority": "Numerische Priorität für die Reihenfolge der Laststeuerung.",
+          "max_draw_watts": "Maximaler erwarteter Geräteverbrauch in Watt.",
+          "controllable_watts": "Bei Ja werden Leistungsbereich und Steuerungsentität konfiguriert."
+        }
+      },
+      "device_watt_controls": {
+        "title": "Leistungsregelung des Geräts",
+        "data": {
+          "minimum_watts": "Mindestleistung (W)",
+          "maximum_watts": "Maximalleistung (W)",
+          "step_watts": "Schrittweite (W)",
+          "control_entity": "Leistungssteuerungs-Entität"
+        }
+      },
+      "edit_circuit_device": {
+        "title": "Stromkreisgerät bearbeiten",
+        "data": {
+          "device_id": "Gerät"
         }
       }
     }

@@ -5,6 +5,10 @@ from unittest.mock import MagicMock
 from custom_components.ha_energy_manager.config_flow import (
     _battery_name,
     _battery_pairing_schema,
+    _circuit_device_schema,
+    _circuit_schema,
+    _circuit_current_schema,
+    _device_watt_schema,
     _make_battery_association,
     _updated_battery_config,
 )
@@ -30,6 +34,31 @@ def test_battery_pairing_form_exposes_a_charge_switch_per_battery():
     fields = {marker.schema for marker in schema.schema}
 
     assert CONF_BATTERY_CHARGE_SWITCH in fields
+
+
+def test_circuit_forms_require_power_and_either_current_or_voltage_sensor():
+    """Circuit forms capture power plus a sensor path that yields amps."""
+    circuit_fields = {marker.schema for marker in _circuit_schema().schema}
+    assert {"name", "fuse_amps", "power_sensor", "current_measurement"} <= circuit_fields
+
+    assert {"current_sensor"} == {
+        marker.schema for marker in _circuit_current_schema("amps").schema
+    }
+    assert {"voltage_sensor"} == {
+        marker.schema for marker in _circuit_current_schema("volts").schema
+    }
+
+
+def test_circuit_device_form_requires_switch_and_max_draw():
+    """Circuit devices are assigned to a circuit and have mandatory load controls."""
+    schema = _circuit_device_schema([{"id": "circuit_1", "name": "Kitchen"}])
+    fields = {marker.schema for marker in schema.schema}
+    assert {
+        "name", "circuit_id", "priority", "max_draw_watts", "switch", "controllable_watts"
+    } <= fields
+
+    watt_fields = {marker.schema for marker in _device_watt_schema().schema}
+    assert {"minimum_watts", "maximum_watts", "step_watts", "control_entity"} <= watt_fields
 
 
 def test_reconfigure_preserves_retained_limits_and_defaults_new_batteries():

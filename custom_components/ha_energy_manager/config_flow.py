@@ -78,6 +78,9 @@ from .const import (
     OPT_DEVICE_SETTINGS,
     OPT_BATTERY_CAPACITY,
     OPT_UPDATE_INTERVAL,
+    OPT_HOUSEHOLD_FUSE_AMPS,
+    OPT_CIRCUITS,
+    OPT_CIRCUIT_DEVICES,
 )
 
 ENTITY_SCHEMA = vol.Schema(
@@ -333,6 +336,88 @@ def _device_options_schema(settings: dict[str, Any]) -> vol.Schema:
             ),
         }
     )
+
+
+def _circuit_schema(circuit: dict[str, Any] | None = None) -> vol.Schema:
+    """Build the required base form for a circuit."""
+    circuit = circuit or {}
+    return vol.Schema({
+        vol.Required("name", default=circuit.get("name", "")): str,
+        vol.Required("fuse_amps", default=circuit.get("fuse_amps", 16)): NumberSelector(
+            NumberSelectorConfig(min=1, max=200, step=1, unit_of_measurement="A", mode=NumberSelectorMode.BOX)
+        ),
+        vol.Required("power_sensor", description={"suggested_value": circuit.get("power_sensor")}): EntitySelector(
+            EntitySelectorConfig(domain="sensor")
+        ),
+        vol.Required("current_measurement", default=circuit.get("current_measurement", "amps")): SelectSelector(
+            SelectSelectorConfig(
+                options=[{"label": "Current sensor (A)", "value": "amps"},
+                         {"label": "Voltage sensor (V)", "value": "volts"}],
+                mode=SelectSelectorMode.DROPDOWN,
+            )
+        ),
+    })
+
+
+def _circuit_current_schema(measurement: str, circuit: dict[str, Any] | None = None) -> vol.Schema:
+    """Build the mandatory current or voltage sensor form."""
+    circuit = circuit or {}
+    if measurement == "amps":
+        return vol.Schema({
+            vol.Required("current_sensor", description={"suggested_value": circuit.get("current_sensor")}): EntitySelector(
+                EntitySelectorConfig(domain="sensor")
+            )
+        })
+    return vol.Schema({
+        vol.Required("voltage_sensor", description={"suggested_value": circuit.get("voltage_sensor")}): EntitySelector(
+            EntitySelectorConfig(domain="sensor")
+        )
+    })
+
+
+def _circuit_device_schema(circuits: list[dict[str, Any]], device: dict[str, Any] | None = None) -> vol.Schema:
+    """Build required device details, including its circuit assignment."""
+    device = device or {}
+    return vol.Schema({
+        vol.Required("name", default=device.get("name", "")): str,
+        vol.Required("circuit_id", default=device.get("circuit_id")): SelectSelector(
+            SelectSelectorConfig(
+                options=[{"label": circuit["name"], "value": circuit["id"]} for circuit in circuits],
+                mode=SelectSelectorMode.DROPDOWN,
+            )
+        ),
+        vol.Required("priority", default=device.get("priority", 1)): NumberSelector(
+            NumberSelectorConfig(min=1, max=1000, step=1, mode=NumberSelectorMode.BOX)
+        ),
+        vol.Required("max_draw_watts", default=device.get("max_draw_watts", 100)): NumberSelector(
+            NumberSelectorConfig(min=1, max=30000, step=10, unit_of_measurement="W", mode=NumberSelectorMode.BOX)
+        ),
+        vol.Required("switch", description={"suggested_value": device.get("switch")}): EntitySelector(
+            EntitySelectorConfig(domain="switch")
+        ),
+        vol.Required("controllable_watts", default=device.get("controllable_watts", "no")): SelectSelector(
+            SelectSelectorConfig(options=[{"label": "Yes", "value": "yes"}, {"label": "No", "value": "no"}], mode=SelectSelectorMode.DROPDOWN)
+        ),
+    })
+
+
+def _device_watt_schema(device: dict[str, Any] | None = None) -> vol.Schema:
+    """Build required power modulation controls for a controllable device."""
+    device = device or {}
+    return vol.Schema({
+        vol.Required("minimum_watts", default=device.get("minimum_watts", 0)): NumberSelector(
+            NumberSelectorConfig(min=0, max=30000, step=10, unit_of_measurement="W", mode=NumberSelectorMode.BOX)
+        ),
+        vol.Required("maximum_watts", default=device.get("maximum_watts", 1000)): NumberSelector(
+            NumberSelectorConfig(min=1, max=30000, step=10, unit_of_measurement="W", mode=NumberSelectorMode.BOX)
+        ),
+        vol.Required("step_watts", default=device.get("step_watts", 10)): NumberSelector(
+            NumberSelectorConfig(min=1, max=30000, step=1, unit_of_measurement="W", mode=NumberSelectorMode.BOX)
+        ),
+        vol.Required("control_entity", description={"suggested_value": device.get("control_entity")}): EntitySelector(
+            EntitySelectorConfig(domain="number")
+        ),
+    })
 
 
 def _updated_battery_config(
@@ -693,7 +778,6 @@ class EnergyManagerOptionsFlow(OptionsFlow):
     def __init__(self, config_entry: ConfigEntry) -> None:
         """Initialize options flow."""
         self._config_entry = config_entry
-        self._battery_options: dict[str, Any] = {}
         self._device_index = 0
         self._device_settings: dict[str, dict[str, Any]] = dict(
             config_entry.options.get(OPT_DEVICE_SETTINGS, {})
@@ -715,10 +799,201 @@ class EnergyManagerOptionsFlow(OptionsFlow):
         self, user_input: dict[str, Any] | None = None
     ) -> FlowResult:
         """Show the configuration sections, like a Home Assistant integration menu."""
-        menu_options = ["manager_settings", "ev"]
+        menu_options = ["manager_settings", "household_fuse", "circuits", "ev"]
         if self._config_entry.data.get(CONF_BATTERIES):
             menu_options.insert(1, "battery_settings")
+        if self._config_entry.options.get(OPT_CIRCUITS):
+            menu_options.insert(menu_options.index("ev"), "circuit_devices")
         return self.async_show_menu(step_id="init", menu_options=menu_options)
+
+    async def async_step_household_fuse(
+        self, user_input: dict[str, Any] | None = None
+    ) -> FlowResult:
+        """Configure the whole-house fuse rating."""
+        if user_input is not None:
+            return self.async_create_entry(
+                title="",
+                data={**self._config_entry.options, **user_input},
+            )
+        return self.async_show_form(
+            step_id="household_fuse",
+            data_schema=vol.Schema({
+                vol.Required(
+                    OPT_HOUSEHOLD_FUSE_AMPS,
+                    default=self._config_entry.options.get(OPT_HOUSEHOLD_FUSE_AMPS, 60),
+                ): NumberSelector(NumberSelectorConfig(
+                    min=1, max=200, step=1, unit_of_measurement="A",
+                    mode=NumberSelectorMode.BOX,
+                ))
+            }),
+        )
+
+    async def async_step_circuits(
+        self, user_input: dict[str, Any] | None = None
+    ) -> FlowResult:
+        """Manage circuit definitions within the current options flow."""
+        if not hasattr(self, "_circuit_draft"):
+            self._circuit_draft = list(self._config_entry.options.get(OPT_CIRCUITS, []))
+        circuits = self._circuit_draft
+        menu = ["add_circuit", "done_circuits"]
+        if circuits:
+            menu.insert(1, "edit_circuit")
+        return self.async_show_menu(step_id="circuits", menu_options=menu)
+
+    async def async_step_add_circuit(
+        self, user_input: dict[str, Any] | None = None
+    ) -> FlowResult:
+        """Create a circuit and collect its current measurement."""
+        if user_input is not None:
+            self._pending_circuit = dict(user_input)
+            return self.async_show_form(
+                step_id=f"circuit_{user_input['current_measurement']}",
+                data_schema=_circuit_current_schema(user_input["current_measurement"]),
+            )
+        return self.async_show_form(
+            step_id="add_circuit",
+            data_schema=_circuit_schema(getattr(self, "_editing_circuit", None)),
+        )
+
+    async def async_step_circuit_amps(
+        self, user_input: dict[str, Any] | None = None
+    ) -> FlowResult:
+        """Finish a circuit that has a direct current sensor."""
+        if user_input is not None:
+            return await self._finish_circuit({**self._pending_circuit, **user_input})
+        return self.async_show_form(step_id="circuit_amps", data_schema=_circuit_current_schema("amps", getattr(self, "_editing_circuit", None)))
+
+    async def async_step_circuit_volts(
+        self, user_input: dict[str, Any] | None = None
+    ) -> FlowResult:
+        """Finish a circuit that derives amps from power and voltage."""
+        if user_input is not None:
+            return await self._finish_circuit({**self._pending_circuit, **user_input})
+        return self.async_show_form(step_id="circuit_volts", data_schema=_circuit_current_schema("volts", getattr(self, "_editing_circuit", None)))
+
+    async def _finish_circuit(self, circuit: dict[str, Any]) -> FlowResult:
+        """Store the new or edited circuit in the flow draft and continue."""
+        circuits = self._circuit_draft
+        index = getattr(self, "_editing_circuit_index", None)
+        if index is None:
+            circuit["id"] = f"circuit_{len(circuits) + 1}"
+            circuits.append(circuit)
+        else:
+            circuit["id"] = circuits[index]["id"]
+            circuits[index] = circuit
+            self._editing_circuit_index = None
+        self._editing_circuit = None
+        return await self.async_step_circuits()
+
+    async def async_step_edit_circuit(
+        self, user_input: dict[str, Any] | None = None
+    ) -> FlowResult:
+        """Select a configured circuit to edit."""
+        circuits = getattr(self, "_circuit_draft", self._config_entry.options.get(OPT_CIRCUITS, []))
+        if user_input is not None:
+            self._editing_circuit_index = next(
+                index for index, item in enumerate(circuits)
+                if item["id"] == user_input["circuit_id"]
+            )
+            circuit = circuits[self._editing_circuit_index]
+            self._pending_circuit = circuit
+            self._editing_circuit = circuit
+            return self.async_show_form(step_id="add_circuit", data_schema=_circuit_schema(circuit))
+        return self.async_show_form(step_id="edit_circuit", data_schema=vol.Schema({
+            vol.Required("circuit_id"): SelectSelector(SelectSelectorConfig(
+                options=[{"label": item["name"], "value": item["id"]} for item in circuits],
+                mode=SelectSelectorMode.DROPDOWN,
+            ))
+        }))
+
+    async def async_step_done_circuits(
+        self, user_input: dict[str, Any] | None = None
+    ) -> FlowResult:
+        """Save circuit definitions."""
+        return self.async_create_entry(title="", data={
+            **self._config_entry.options,
+            OPT_CIRCUITS: getattr(self, "_circuit_draft", []),
+        })
+
+    async def async_step_circuit_devices(
+        self, user_input: dict[str, Any] | None = None
+    ) -> FlowResult:
+        """Manage devices assigned to household circuits."""
+        if not hasattr(self, "_device_draft"):
+            self._device_draft = list(self._config_entry.options.get(OPT_CIRCUIT_DEVICES, []))
+        menu = ["add_circuit_device", "done_circuit_devices"]
+        if self._device_draft:
+            menu.insert(1, "edit_circuit_device")
+        return self.async_show_menu(step_id="circuit_devices", menu_options=menu)
+
+    async def async_step_add_circuit_device(
+        self, user_input: dict[str, Any] | None = None
+    ) -> FlowResult:
+        """Add a controllable or monitored electrical device."""
+        if user_input is not None:
+            self._pending_device = dict(user_input)
+            if user_input["controllable_watts"] == "yes":
+                return self.async_show_form(step_id="device_watt_controls", data_schema=_device_watt_schema(getattr(self, "_editing_device", None)))
+            return await self._finish_circuit_device({})
+        return self.async_show_form(step_id="add_circuit_device", data_schema=_circuit_device_schema(
+            self._config_entry.options.get(OPT_CIRCUITS, []),
+            getattr(self, "_editing_device", None),
+        ))
+
+    async def async_step_device_watt_controls(
+        self, user_input: dict[str, Any] | None = None
+    ) -> FlowResult:
+        """Collect the watt control range for a controllable device."""
+        if user_input is not None:
+            return await self._finish_circuit_device(user_input)
+        return self.async_show_form(step_id="device_watt_controls", data_schema=_device_watt_schema(getattr(self, "_editing_device", None)))
+
+    async def _finish_circuit_device(self, controls: dict[str, Any]) -> FlowResult:
+        """Save a device in the current options-flow draft."""
+        device = {**self._pending_device, **controls}
+        index = getattr(self, "_editing_device_index", None)
+        if index is None:
+            device["id"] = f"device_{len(self._device_draft) + 1}"
+            self._device_draft.append(device)
+        else:
+            device["id"] = self._device_draft[index]["id"]
+            self._device_draft[index] = device
+            self._editing_device_index = None
+            self._editing_device = None
+        return await self.async_step_circuit_devices()
+
+    async def async_step_edit_circuit_device(
+        self, user_input: dict[str, Any] | None = None
+    ) -> FlowResult:
+        """Select a device to edit."""
+        devices = getattr(self, "_device_draft", self._config_entry.options.get(OPT_CIRCUIT_DEVICES, []))
+        if user_input is not None:
+            self._editing_device_index = next(
+                index for index, item in enumerate(devices)
+                if item["id"] == user_input["device_id"]
+            )
+            device = devices[self._editing_device_index]
+            self._pending_device = device
+            self._editing_device = device
+            return self.async_show_form(
+                step_id="add_circuit_device",
+                data_schema=_circuit_device_schema(self._config_entry.options.get(OPT_CIRCUITS, []), device),
+            )
+        return self.async_show_form(step_id="edit_circuit_device", data_schema=vol.Schema({
+            vol.Required("device_id"): SelectSelector(SelectSelectorConfig(
+                options=[{"label": item["name"], "value": item["id"]} for item in devices],
+                mode=SelectSelectorMode.DROPDOWN,
+            ))
+        }))
+
+    async def async_step_done_circuit_devices(
+        self, user_input: dict[str, Any] | None = None
+    ) -> FlowResult:
+        """Save all circuit device definitions."""
+        return self.async_create_entry(title="", data={
+            **self._config_entry.options,
+            OPT_CIRCUIT_DEVICES: getattr(self, "_device_draft", []),
+        })
 
     async def async_step_manager_settings(
         self, user_input: dict[str, Any] | None = None

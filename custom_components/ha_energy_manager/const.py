@@ -32,6 +32,9 @@ OPT_FEED_IN_POWER_STEP = "feed_in_power_step"
 OPT_MIN_DWELL_TIME = "min_dwell_time"
 OPT_DEVICE_SETTINGS = "device_settings"
 OPT_BATTERY_CAPACITY = "battery_capacity_wh"
+OPT_HOUSEHOLD_FUSE_AMPS = "household_fuse_amps"
+OPT_CIRCUITS = "circuits"
+OPT_CIRCUIT_DEVICES = "circuit_devices"
 
 # Default values for options
 DEFAULT_FEED_IN_MODE = "dynamic"
